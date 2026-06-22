@@ -70,6 +70,11 @@ pub fn normalize_content(
         .collect();
 
     if !profile.edge_trim.is_empty() {
+        // Normalize before trimming so a character that NFKC folds *into* an
+        // edge-trim character (e.g. U+2000 EN QUAD → U+0020 SPACE) is caught at
+        // the outer edge in the same pass. Since NFKC is idempotent, a second
+        // pass can't expose new trim chars, so this order is also what makes
+        // the whole step idempotent.
         trim_outer(&mut nodes, &profile.edge_trim);
     }
 
@@ -206,6 +211,18 @@ mod tests {
     fn empty_trim_set_preserves_edges() {
         let out = normalize_content(&[ContentNode::text(" Hello ")], &nfc_no_trim());
         assert_eq!(out, [ContentNode::text(" Hello ")]);
+    }
+
+    #[test]
+    fn default_trims_both_edges_of_a_single_run() {
+        // One text node with both leading and trailing trim chars: the leading
+        // trim writes back an intermediate value, then the trailing trim reads
+        // that updated node. This pins the single-node sequential-mutation path.
+        let out = normalize_content(
+            &[ContentNode::text(" hi ")],
+            &NormalizationProfile::default(),
+        );
+        assert_eq!(out, [ContentNode::text("hi")]);
     }
 
     #[test]

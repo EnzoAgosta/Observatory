@@ -330,6 +330,34 @@ mod tests {
     }
 
     #[test]
+    fn canonical_bytes_of_empty_atom_is_version_plus_language() {
+        // No content nodes: just the scheme version and the lowercased tag.
+        let atom = en([]);
+        let mut expected = vec![1u8];
+        expected.extend_from_slice(&5u32.to_be_bytes());
+        expected.extend_from_slice(b"en-us");
+        assert_eq!(
+            canonical_bytes(&atom, &NormalizationProfile::default()),
+            expected
+        );
+    }
+
+    #[test]
+    fn canonical_bytes_lowercases_the_language_tag() {
+        // Case is a faithful-storage concern; identity lowercases the tag, so
+        // the serialized bytes carry "en-us" even when the atom stores "en-US".
+        let upper = Atom::new(
+            LanguageTag::parse("EN-US").unwrap(),
+            [ContentNode::text("hi")],
+        );
+        let lower = en([ContentNode::text("hi")]);
+        assert_eq!(
+            canonical_bytes(&upper, &NormalizationProfile::default()),
+            canonical_bytes(&lower, &NormalizationProfile::default()),
+        );
+    }
+
+    #[test]
     fn distinct_chunkings_have_the_same_id() {
         // Structurally different yet identical identity.
         let chunked = en([ContentNode::text("a"), ContentNode::text("b")]);
@@ -431,6 +459,30 @@ mod tests {
     fn atom_id_is_deterministic() {
         let atom = en([ContentNode::text("hello"), ContentNode::placeholder("<x/>")]);
         assert_eq!(id(&atom), id(&atom));
+    }
+
+    #[test]
+    fn atom_id_golden_values_are_pinned() {
+        // Snapshot of the exact SHA-256 over the canonical bytes for two fixed
+        // inputs. Any drift in the pipeline (serialization, normalization order,
+        // language casing) changes these and must be a deliberate, documented
+        // scheme bump — never an accident.
+        let hello = en([ContentNode::text("hello")]);
+        assert_eq!(
+            id(&hello).to_string(),
+            "34e0fad12f18e1fff70dfaf3166cf49b3079683eed017da9c9b20bf4019150a1",
+        );
+
+        let click = en([
+            ContentNode::text("Click "),
+            ContentNode::placeholder("<b>"),
+            ContentNode::text("here"),
+            ContentNode::placeholder("</b>"),
+        ]);
+        assert_eq!(
+            id(&click).to_string(),
+            "0357851f22204f98b5263997acdb4fd48336cd4b59f1ef3d677104eb68dd3695",
+        );
     }
 
     #[test]

@@ -26,6 +26,8 @@ decisions when resolved.
 relate") — plus retrieval, training, and an eventual business layer. The thesis
 (§7, §11) identifies the normalization engine — defining the *atom* and proving
 it round-trips — as the make-or-break artifact that gates everything downstream.
+(The two-engine storage shape was refined in D22 — Lance as the single substrate,
+Kùzu dropped after its archival.)
 
 **Decision.** This project (`observatory`) implements *only* the normalization
 core: the intermediate representation (IR), content-addressed identity, and the
@@ -570,6 +572,59 @@ and remains open: annotations can wrap arbitrary content and carry semantics
 
 ### Q4 — Normalization profile interface
 **Resolved by D20** (transparent struct of enums, explicit argument, not hashed).
+
+### D22 — Wider-system storage: Lance as the single substrate, DuckDB as query engine; Kùzu dropped
+**Status:** Accepted &nbsp;|&nbsp; **Refines the storage clause of D1**
+
+**Context.** D1's context described the wider system as two storage engines —
+Lance (strings + embeddings) and Kùzu (typed observations) — mirroring the
+thesis's "what's near" / "how things relate" split. Since then Kùzu was acquired
+by Apple (deal disclosed Oct 9, 2025) and the `kuzudb/kuzu` repository was
+archived the next day with a "working on something new" note — an acquihire, not
+neglect. The technology is not coming back as a maintained independent project.
+(A community fork, `Vela-Engineering/kuzu`, exists as of Feb 2026 but is too small
+to bet an architecture on.)
+
+**Decision.**
+- **Lance is the single storage substrate** for the wider system: atoms,
+  embeddings, and the observation log all live as Lance tables. Lance's columnar
+  scans, random access, and built-in vector indexes cover the dominant
+  translation workloads (corpus scans, per-atom lookup, semantic nearness) in
+  one engine.
+- **DuckDB is a query engine over Lance data**, not a store. It handles the
+  1–2 hop joins and filtered scans that make up the common case — e.g. "all
+  translations of this string approved by a human and not blacklisted, as of
+  ≤3 months ago" — for free.
+- **The graph is a derived view, not a store of record.** Observations are an
+  append-only log (subject atom, predicate, object/value, timestamp, provenance);
+  "the graph" is a projection built when a query needs it, consistent with the
+  event-sourcing/lakehouse shape the system has always had.
+- **Kùzu is dropped.** A real graph engine is only re-evaluated if a concrete
+  *recursive* query (transitive `context_for`, multi-hop review reachability)
+  proves unserveable by Lance + DuckDB — not on architectural aesthetics. The
+  Kùzu fork remains a safety valve if that day comes.
+
+**Why.** The "what's near" / "how things relate" split was always an
+access-pattern split, not a mandate for two engines. Lance's random access plus
+DuckDB's columnar joins cover the 1–2 hop access pattern the common queries need;
+a separate graph engine earns its place only at recursion, which is not the
+common case. Collapsing to one substrate also keeps the system honest to the
+lakehouse/event-sourcing model — one append-only log, many derived views —
+rather than bifurcating truth across two stores.
+
+**Consequence for the observation layer (deferred, recorded so it isn't lost).**
+With the graph as a derived view, the observation layer's design reduces to: a
+uniform append-only log as the source of truth + materialized per-predicate
+projections for hot read paths (the TM projection being the obvious first one).
+Cross-deployment sharing, which at the atom layer is solved by the `AtomId`
+standard (§10), hits a new standardization surface at the observation layer:
+predicate semantics. A small core shared vocabulary (`TRANSLATION_OF`, review,
+provenance) plus a namespaced extension space is the likely shape, but this is
+designed *after* the XLIFF adapter (Phase 2) has produced concrete ingest
+experience — not before. Designing the read model before seeing the writes would
+reproduce the mistake the atom layer was specifically careful to avoid.
+
+---
 
 ### Q5 — Language-only tags at the XLIFF boundary
 D7 makes region mandatory, but XLIFF 1.2 commonly uses language-only tags

@@ -73,6 +73,25 @@ proptest! {
         prop_assert_eq!(twice, once);
     }
 
+    /// Normalized output stays canonical: no empty text run and never two text
+    /// runs adjacent. The serialization assumes this, and the NFKC-before-trim
+    /// order above is what preserves it (NFKC never empties a non-empty run, and
+    /// trim only shortens or drops the first/last node, so it can't create
+    /// adjacency from collapsed input).
+    #[test]
+    fn normalize_yields_canonical_structure(nodes in arb_nodes()) {
+        let profile = NormalizationProfile::default();
+        let out = normalize_content(&collapse(&nodes), &profile);
+        for node in &out {
+            if !node.is_placeholder() {
+                prop_assert!(!node.data().is_empty());
+            }
+        }
+        for pair in out.windows(2) {
+            prop_assert!(pair[0].is_placeholder() || pair[1].is_placeholder());
+        }
+    }
+
     /// An atom's identity is independent of how its text was split into runs:
     /// many text chunks and the single concatenated string hash alike.
     #[test]
