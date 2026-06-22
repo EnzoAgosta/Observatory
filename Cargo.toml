@@ -6,3 +6,4 @@ license = "MIT OR Apache-2.0"
 description = "Normalization core for a translation data layer: content-addressed string atoms and observations."
 
 [dependencies]
+sha2 = "0.11.0"
