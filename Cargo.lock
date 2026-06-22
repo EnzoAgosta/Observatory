@@ -155,7 +155,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "observatory"
+name = "observatory-core"
 version = "0.1.0"
 dependencies = [
  "oxilangtag",
@@ -165,10 +165,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "observatory-xliff"
+name = "observatory-xliff12"
 version = "0.1.0"
 dependencies = [
- "observatory",
+ "observatory-core",
 ]
 
 [[package]]

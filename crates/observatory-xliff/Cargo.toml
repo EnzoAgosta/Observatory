@@ -1,9 +1,0 @@
-[package]
-name = "observatory-xliff"
-version = "0.1.0"
-edition.workspace = true
-license.workspace = true
-description = "XLIFF 1.2 adapter for observatory: parse and emit atoms."
-
-[dependencies]
-observatory = { path = "../observatory", version = "0.1.0" }

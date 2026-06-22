@@ -5,9 +5,9 @@
 //! atom's identity does not depend on how its text happened to be split into
 //! runs.
 
-use observatory::identity::{atom_id, canonical_bytes, collapse};
-use observatory::ir::{Atom, ContentNode, LanguageTag};
-use observatory::normalize::{NormalizationProfile, normalize_content};
+use observatory_core::identity::{atom_id, canonical_bytes, collapse};
+use observatory_core::ir::{Atom, ContentNode, LanguageTag};
+use observatory_core::normalize::{NormalizationProfile, normalize_content};
 use proptest::prelude::*;
 
 fn text(data: String) -> ContentNode {

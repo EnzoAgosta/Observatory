@@ -1,69 +1,47 @@
 # Observatory
 
-Observatory turns translation segments into content-addressed **atoms**.
+A lakehouse for multilingual data.
 
-A translation segment — text that may carry inline formatting — is recorded as an
-**atom**: a single-language string in which every inline tag is reduced to an
-opaque *placeholder*. Each atom has a stable, content-derived identity, the
-**`AtomId`**: a SHA-256 over a canonical, normalized serialization of its content
-and language. Identical content in the same language always produces the same
-`AtomId`, no matter how the segment was tagged or how its text was split into
-runs.
+Observatory turns translation segments into content-addressed **atoms** and
+records facts about them as append-only **observations**. A traditional
+translation memory encodes a single fact — "this source maps to this target" —
+in a row and tacks context on as extra columns. Observatory decouples the strings
+from the facts: an atom records only *what a string is*, and every fact about it
+— `TRANSLATION_OF`, `APPROVED_BY`, `USED_IN_CAMPAIGN`, `BLACKLISTED`,
+`CONTEXT_FOR`, `ALTERNATIVE_FOR` — is a separate observation over atoms. The old
+TM is a derived projection of this richer structure; the structure is never a
+derivative of the TM.
 
-The point is to decouple a string from its relationships. An atom records only
-*what a string is*; how strings relate — translations, reviews, and other facts —
-is expressed separately as observations over atoms, never baked into the atom
-itself.
+This is, in effect, event sourcing applied to translation: the observation log is
+the source of truth, and everything else (the TM view, review state, reachability
+queries) is a read model built on top. "Derive the old TM from this model, but
+never the reverse" is the bet.
 
-## Core concepts
+## Storage shape
 
-- **`Atom`** — a single-language string as an ordered list of content nodes. It is
-  recorded faithfully: an atom stores exactly what it was given, and the original
-  string is recovered by joining its nodes back together.
-- **Content node** — either translatable *text* or an opaque *placeholder*
-  standing in for non-text (an inline tag, a variable, a code). A placeholder's
-  markup is preserved for reconstruction but never interpreted, and it does not
-  affect identity beyond its presence and position.
-- **`LanguageTag`** — a validated BCP-47 tag. It must be well-formed and include a
-  region; script and other subtags are optional. Validation is structural only
-  (no registry lookup), so private-use tags are accepted.
-- **`NormalizationProfile`** — the explicit, conservative knobs deciding how
-  content is canonicalized before hashing (Unicode form, edge whitespace).
-- **`AtomId`** — the content-addressed identity.
+- **Lance** is the single storage substrate: atoms, embeddings, and the
+  observation log all live as Lance tables. Columnar scans, random access, and
+  built-in vector indexes cover the dominant translation workloads in one engine.
+- **DuckDB** is a query engine over that data, not a store. It handles the 1–2
+  hop joins and filtered scans that make up the common case (e.g. "all
+  translations of this string approved by a human and not blacklisted, as of ≤3
+  months ago").
+- **The graph is a derived view**, not a store of record. A recursive graph engine
+  is only revisited if a concrete query proves unserveable by Lance + DuckDB.
 
-## Identity, in one line
+## Repository layout
 
-```text
-AtomId = SHA-256( serialize( normalize( collapse( atom ) ) ) )
-```
+This repo is a Cargo workspace of independently releasable crates:
 
-1. **collapse** — merge adjacent text runs, drop empty ones; leave placeholders alone.
-2. **normalize** — apply the chosen `NormalizationProfile`, and lowercase the language tag.
-3. **serialize** — an unambiguous, length-prefixed byte layout.
-4. **hash** — SHA-256.
+- **[`observatory-core`](crates/observatory-core/)** — the normalization engine:
+  the atom IR, content-addressed `AtomId`, and normalization. The foundation
+  everything else rests on.
+- **[`observatory-xliff12`](crates/observatory-xliff12/)** — the XLIFF 1.2 adapter:
+  parse and emit atoms at the boundary with the outside world. (Phase 2; currently
+  a skeleton.)
 
-Because identity is a normalized projection, two atoms can be structurally
-different yet share an `AtomId`. Always compare and key by `AtomId`, never by
-structural equality.
-
-## Example
-
-```rust
-use observatory::ir::{Atom, ContentNode, LanguageTag};
-use observatory::identity::atom_id;
-use observatory::normalize::NormalizationProfile;
-
-let tag = LanguageTag::parse("en-US").unwrap();
-let atom = Atom::new(tag, [
-    ContentNode::text("Click "),
-    ContentNode::placeholder("<b>"),
-    ContentNode::text("here"),
-    ContentNode::placeholder("</b>"),
-]);
-
-let id = atom_id(&atom, &NormalizationProfile::default());
-println!("{id}");
-```
+Decisions and their reasoning live in [`docs/DECISIONS.md`](docs/DECISIONS.md) —
+an append-only log mirroring the observation model it documents.
 
 ## License
 
