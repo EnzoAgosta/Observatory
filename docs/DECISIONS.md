@@ -354,6 +354,46 @@ identity).
 
 ---
 
+### D17 — Faithful construction; structural normalization lives in the `AtomId`
+**Status:** Accepted &nbsp;|&nbsp; **Refines D14; supersedes the "canonical-by-construction" clause and model sketch of D16**
+
+**Context.** D16 had the `Atom` be *canonical by construction* — `Atom::new`
+merged adjacent text and dropped empty runs. That makes construction silently
+mutate the recording.
+
+**Decision.**
+- **Construction is a faithful, non-normalizing recording.** `Atom::new` stores
+  exactly the nodes it is given. `[Text("a"), Text("b")]` stays distinct from
+  `[Text("ab")]`; empty and adjacent runs are preserved. Construction carries
+  zero logic.
+- **Structural normalization — merge adjacent text, drop empty text — moves into
+  the `AtomId` computation** (the hashing projection, Phase 1b–1c) as an
+  explicit, independently-tested function. So `[Text("a"), Text("b")]` and
+  `[Text("ab")]` are **different `Atom`s** that produce the **same `AtomId`**.
+- This keeps the no-fragmentation guarantee (normalization still happens before
+  hashing) while keeping the recording pure.
+
+**Consequence (accepted; documented on the types).** Structural equality (`==`)
+is a *different relation* from identity equality. Two `Atom`s may share an
+`AtomId` without being `==`. **Dedup and identity are always via `AtomId`, never
+`==`**; `==` means "structurally identical recording."
+
+**Why.** A pure, surprise-free constructor is the strongest round-trip-safe
+contract and the truest expression of "dumb recording" (D14); identity stays a
+deliberate, derived projection — the `AtomId` is a *materialized view* over the
+raw `Atom`, consistent with the thesis's raw-data-plus-views model.
+
+**Model (updated; supersedes D16's sketch).**
+- `Atom { language, content: Vec<ContentNode> }` — order significant; faithful,
+  non-normalizing.
+- `ContentNode { is_placeholder: bool, data: String }` — the closed binary is a
+  `bool`, not an enum (`ContentKind` dropped). Constructors `text()` /
+  `placeholder()`; accessor `is_placeholder()`.
+- Reconstruction = in-order join of `data`. Normalization for hashing is a
+  separate Phase 1b function.
+
+---
+
 ## Open Questions
 
 ### Q1 — Region folding default
