@@ -175,6 +175,10 @@ fn write_bytes_field(buf: &mut Vec<u8>, bytes: &[u8]) {
 
 /// Computes the [`AtomId`] of `atom` under `profile`: the SHA-256 of its
 /// [`canonical_bytes`].
+///
+/// A segment whose content normalizes away entirely (for example a
+/// whitespace-only segment under a trimming profile) has the same identity as an
+/// empty atom.
 pub fn atom_id(atom: &Atom, profile: &NormalizationProfile) -> AtomId {
     let digest = Sha256::digest(canonical_bytes(atom, profile));
     let mut bytes = [0u8; 32];
@@ -468,5 +472,14 @@ mod tests {
     fn atom_id_parse_rejects_bad_input() {
         assert!("abc".parse::<AtomId>().is_err()); // wrong length
         assert!("z".repeat(64).parse::<AtomId>().is_err()); // right length, non-hex
+    }
+
+    #[test]
+    fn empty_and_whitespace_only_atoms_share_identity() {
+        // Under a trimming profile a whitespace-only segment normalizes away to
+        // empty content, so it has the same identity as an empty atom.
+        let empty = en([]);
+        let whitespace = en([ContentNode::text("   ")]);
+        assert_eq!(id(&empty), id(&whitespace));
     }
 }

@@ -5,7 +5,7 @@
 //! atom's identity does not depend on how its text happened to be split into
 //! runs.
 
-use observatory::identity::{atom_id, collapse};
+use observatory::identity::{atom_id, canonical_bytes, collapse};
 use observatory::ir::{Atom, ContentNode, LanguageTag};
 use observatory::normalize::{NormalizationProfile, normalize_content};
 use proptest::prelude::*;
@@ -82,4 +82,53 @@ proptest! {
         let single = Atom::new(english(), [text(chunks.concat())]);
         prop_assert_eq!(atom_id(&chunked, &profile), atom_id(&single, &profile));
     }
+
+    /// Re-chunking text *around* placeholders does not change the identity:
+    /// splitting every text run into single characters, with placeholders left in
+    /// place, yields the same `AtomId`.
+    #[test]
+    fn atom_id_is_invariant_to_text_rechunking_around_placeholders(nodes in arb_nodes()) {
+        let profile = NormalizationProfile::default();
+        let original = Atom::new(english(), nodes.clone());
+        let rechunked: Vec<ContentNode> = nodes
+            .iter()
+            .flat_map(|node| {
+                if node.is_placeholder() {
+                    vec![node.clone()]
+                } else {
+                    node.data().chars().map(|c| text(c.to_string())).collect()
+                }
+            })
+            .collect();
+        let rechunked = Atom::new(english(), rechunked);
+        prop_assert_eq!(atom_id(&original, &profile), atom_id(&rechunked, &profile));
+    }
+
+    /// The serialization is injective on the identity-relevant projection: two
+    /// atoms produce the same canonical bytes exactly when their normalized text
+    /// and placeholder positions match. Placeholder *markup* is excluded from
+    /// identity, so it is dropped from the projection too. This guards against a
+    /// future framing change silently introducing a collision (different
+    /// content, same id).
+    #[test]
+    fn canonical_bytes_are_injective_on_identity_projection(a in arb_nodes(), b in arb_nodes()) {
+        let profile = NormalizationProfile::default();
+        let atom_a = Atom::new(english(), a);
+        let atom_b = Atom::new(english(), b);
+        let key_a = identity_projection(&normalize_content(&collapse(atom_a.content()), &profile));
+        let key_b = identity_projection(&normalize_content(&collapse(atom_b.content()), &profile));
+        prop_assert_eq!(
+            key_a == key_b,
+            canonical_bytes(&atom_a, &profile) == canonical_bytes(&atom_b, &profile)
+        );
+    }
+}
+
+/// The part of a node sequence that identity actually encodes: each text run by
+/// its content, each placeholder by mere presence (its markup is excluded).
+fn identity_projection(nodes: &[ContentNode]) -> Vec<Option<String>> {
+    nodes
+        .iter()
+        .map(|node| (!node.is_placeholder()).then(|| node.data().to_owned()))
+        .collect()
 }
