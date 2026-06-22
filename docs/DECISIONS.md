@@ -265,6 +265,55 @@ wanted.
 
 ---
 
+### D13 — The canonical unit is named `Atom` (not `Segment`)
+**Status:** Accepted
+
+**Decision.** The content-addressed unit is the **`Atom`**; its content hash is
+the **`AtomId`**.
+
+**Why.** "Segment" is ubiquitous in the translation industry and carries
+conventional baggage — it implies a source→target row in a TM. This project
+deliberately *decouples* strings from relationships (D1), so naming the unit
+`Atom` reinforces that it is a single, relation-free, content-addressed string,
+not a TM segment.
+
+---
+
+### D14 — Identity is a dumb, reversible recording: positional renumbering, permissive structure
+**Status:** Accepted
+
+**Decision.**
+- Building an `Atom` is a **dumb, reversible recording** of "what is text and
+  what is tag," in order. The IR does **not** validate the input. Assumption:
+  any XLIFF segment fed to us was *already valid* upstream.
+- Tags are **always renumbered to appearance (positional) order**, regardless of
+  the source's original ids — even if those ids were "correct." Original
+  dialect ids are preserved in `payload` for round-trip.
+- **Permissive on structure**: we do not enforce well-nested pairing (XLIFF 1.2
+  allows overlap via `rid`). We require only canonical positional numbering;
+  whatever pairing the input expresses, we record it and can reverse it.
+
+**Why.** Round-trip fidelity demands we accept whatever valid XLIFF contains;
+enforcing well-nesting would risk lossy round-trips and is policy that belongs
+above identity (cf. D6). Canonical positional numbering is precisely what makes
+the atom stable across differing dialect id schemes (D2).
+
+---
+
+### D15 — `Payload` stays opaque for Phase 1
+**Status:** Accepted
+
+**Decision.** `Payload` — the recoverable, dialect-specific tag data that is
+never hashed (D2) — is modeled as a thin **opaque blob** for Phase 1
+(format-free). Its internal structure is deferred to Phase 2, when XLIFF 1.2
+round-trip requirements are concrete.
+
+**Why.** It never affects identity, so its shape should follow the round-trip
+needs we will only know once we parse real XLIFF. Avoids speculative structure
+(KISS).
+
+---
+
 ## Open Questions
 
 ### Q1 — Region folding default
