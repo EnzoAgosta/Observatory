@@ -512,9 +512,46 @@ with internal / placeholder-adjacent whitespace preserved; language tag
 lowercased (D7, fixed); region-folding deferred.
 
 **Consequence.** Cross-deployment `AtomId` sharing (§10) requires agreeing on
-**both** the serialization version and the normalization profile — a documented
+the serialization version and the normalization profile — a documented
 precondition that cannot be self-enforced by the id without breaking
-single-profile dedup.
+single-profile dedup. (The full precondition is sharpened in D21.)
+
+---
+
+### D21 — Closing the reproducibility gap: explicit edge-trim set, pinned Unicode version
+**Status:** Accepted &nbsp;|&nbsp; **Refines D20**
+
+**Context.** A cold audit found that the cross-implementation reproducibility
+promise (§10) had two *unpinned* dependencies silently determining the `AtomId`
+bytes: the definition of "whitespace" used for trimming (Rust's Unicode
+`White_Space`, which differs across languages and std versions), and the Unicode
+version behind NFC/NFKC. D20's stated precondition ("serialization version +
+profile") omitted both — the profile was treated as the full normalization spec,
+but it was only a *selector* over ambient library behavior.
+
+**Decision.**
+- **The whitespace knob becomes an explicit set of code points** on the profile:
+  `NormalizationProfile.edge_trim: Vec<char>`. Trimming removes leading and
+  trailing runs of characters in this set from a segment's outer edges, stopping
+  at the first character not in the set. An empty set trims nothing (replacing
+  the old `WhitespacePolicy::Preserve`); the default set is
+  `{U+0009, U+000A, U+000D, U+0020}` (replacing `TrimOuter`). This makes the
+  trimmed set explicit, customizable (even non-whitespace, or per-language),
+  debuggable, and reproducible — with no dependence on any library's whitespace
+  definition. As a bonus, NBSP and other Unicode spaces are *not* trimmed by
+  default, so semantically meaningful spacing survives.
+- **The Unicode normalization version is part of the contract.**
+  `unicode-normalization` is pinned to an exact version (`=x.y.z`) so its Unicode
+  data changes only through a deliberate, revertible dependency bump.
+
+**The full reproducibility contract** (supersedes D20's two-item version): two
+deployments produce identical `AtomId`s for the same input iff they agree on
+(1) the serialization version, (2) the normalization profile *including its
+edge-trim set*, and (3) the Unicode version of the normalization tables.
+
+**Why.** An `AtomId` is only globally reproducible if every input to the hash is
+pinned by the spec, not by ambient library behavior. The audit showed two such
+inputs were implicit; this makes them explicit.
 
 ---
 
