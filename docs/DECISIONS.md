@@ -642,6 +642,58 @@ considered outdated and never traded against the reproducibility cost it was
 meant to save. Recorded so the choice is deliberate, not accidental, and so a
 future "shouldn't this be gitignored?" PR has an answer.
 
+### D24 — Promote to a Cargo workspace: one repo, multiple crates
+**Status:** Accepted &nbsp;|&nbsp; **Enacts D10's deferred split**
+
+**Context.** D10 scoped `observatory` as a single library crate and said it
+would be promoted to a Cargo workspace "only when a concrete need justifies the
+split — not pre-emptively." The XLIFF 1.2 adapter (Phase 2) is that need: it
+brings an XML parser dependency and dialect-specific concerns that must not leak
+into the normalization core, and it should be independently releasable.
+
+**Decision.** The repo becomes a **Cargo workspace** of multiple crates,
+developed and tested together but released independently:
+```
+Cargo.toml              workspace manifest (no [package])
+Cargo.lock              one lockfile for the whole workspace
+
+crates/
+  observatory/          the normalization core (this crate, renamed in place)
+  observatory-xliff/    the XLIFF 1.2 adapter (Phase 2)
+  observatory-lance/    Lance storage substrate (later)
+```
+- The **root `Cargo.toml` has no `[package]`** — it is a workspace manifest
+  listing `members = ["crates/*"]`.
+- A **`[workspace.package]`** table sets shared metadata (edition, license) once;
+a **`[workspace.dependencies]`** table pins shared deps (e.g. the D21 exact pin
+  on `unicode-normalization`) in one place that every member crate inherits.
+- Each member crate has its **own `[package]` Cargo.toml** with its own name and
+  version, inheriting shared metadata via `.workspace = true`.
+- **Cross-crate deps use both `path` and `version`** — `path` so local changes
+  build against local source without publishing, `version` so crates.io consumers
+  resolve correctly. Never one without the other.
+- One `Cargo.lock` and one `target/` shared across the workspace; `cargo test`
+  at the root builds and tests every crate, `cargo test -p observatory-xliff`
+  scopes to one. D23's "commit the lockfile" stance is unchanged (there is now
+  one workspace lockfile).
+- Each crate is **released independently**: `cargo publish -p observatory`, then
+  later `cargo publish -p observatory-xliff`, each with its own version. A
+  consumer who only needs the core pulls `observatory` and never gets the XML
+  parser.
+
+**Naming.** The core keeps the bare name `observatory` (ecosystem convention:
+`tokio` vs `tokio-util`, `serde` vs `serde_json`); adapters/extensions get the
+  `-<role>` suffix. No separate repos — atomic cross-crate changes (e.g. adding a
+  `region()` accessor to `LanguageTag` for the XLIFF adapter's Q5 work) land in
+  one commit and are tested together, which separate repos make painful.
+
+**Why now.** Converting before writing the XLIFF adapter means Phase 2 starts in
+the right shape, instead of bolting it onto the single crate and untangling
+later. The conversion is mechanical (move `src/`, `tests/`, and the crate-level
+`Cargo.toml` into `crates/observatory/`, add the workspace manifest and an
+`observatory-xliff` skeleton), and `cargo test` at the root confirms nothing
+broke.
+
 ---
 
 ### Q5 — Language-only tags at the XLIFF boundary
