@@ -61,7 +61,7 @@ let atom = Atom::new(tag, [
     ContentNode::placeholder("</b>"),
 ]);
 
-let id = atom_id(&atom, &NormalizationProfile::DEFAULT);
+let id = atom_id(&atom, &NormalizationProfile::default());
 println!("{id}");
 ```
 

@@ -29,3 +29,9 @@
 pub mod identity;
 pub mod ir;
 pub mod normalize;
+
+/// Compiles the code examples in the project README as doc-tests, so they can't
+/// drift from the real API. Exists only during doc-test collection.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+pub struct ReadmeDocTests;
