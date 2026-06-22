@@ -1,5 +1,8 @@
 # observatory-xliff12
 
+> **This crate is a functionally empty crate that exists to reserve the crate
+> name of observatory-xliff12. It should not be used.**
+
 The XLIFF 1.2 adapter for [`observatory-core`]: parsing XLIFF 1.2 segments into
 [`observatory_core::ir::Atom`]s and emitting atoms back to XLIFF 1.2.
 

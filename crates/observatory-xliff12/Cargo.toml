@@ -1,9 +1,11 @@
 [package]
 name = "observatory-xliff12"
-version = "0.1.0"
+version = "0.0.1"
 edition.workspace = true
 license.workspace = true
 description = "XLIFF 1.2 adapter for observatory-core: parse and emit atoms."
+repository = "https://github.com/EnzoAgosta/Observatory"
+readme = "README.md"
 
 [dependencies]
 observatory-core = { path = "../observatory-core", version = "0.1.0" }
