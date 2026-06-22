@@ -394,6 +394,48 @@ raw `Atom`, consistent with the thesis's raw-data-plus-views model.
 
 ---
 
+### D18 — Canonical serialization scheme for the `AtomId`
+**Status:** Accepted
+
+**Decision.** The `AtomId` is `SHA-256` over a **length-prefixed binary (TLV)
+serialization** of the collapsed, normalized atom — no in-band delimiters or
+escaping. Layout:
+
+```
+[version]                       1 byte (currently 0x01), hashed in-band
+[lang-len][lang-bytes]          u32 BE length + UTF-8 BCP-47 tag
+( node )*                       zero or more nodes, to end of buffer
+  text node:        0x00 [len] [UTF-8 bytes]   (len = u32 BE)
+  placeholder node: 0x01                       (no data — D16)
+```
+
+- **`u32` big-endian** lengths, written explicitly (`to_be_bytes`), **never**
+  native-endian — native-endian would make ids platform-dependent. BE is chosen
+  for wire-format convention and hex-dump legibility; correctness is identical
+  to LE.
+- **No node count** — the framing is self-delimiting, so the byte string decodes
+  unambiguously left-to-right. That makes the serialization **injective**
+  (distinct collapsed atoms → distinct bytes), which is the whole point.
+- A **placeholder contributes only its `0x01` type byte**, so its `data` never
+  enters identity while its **position and count do** (D16).
+- The **leading version byte is hashed in-band**: a future scheme bumps the
+  byte, so two schemes can never produce the same hash input → hard
+  cross-version collision separation. This is decisive for §10 (ids shared and
+  merged across deployments) and keeps the identity guarantee self-contained in
+  this crate rather than delegated to a downstream observation.
+
+**Why TLV over delimiter + escaping.** Text is arbitrary Unicode from XLIFF, so
+any in-band sentinel can occur *in the text* and collide with a placeholder
+marker; escaping it is the classic source of injectivity bugs. Out-of-band
+length framing sidesteps escaping entirely.
+
+**Pipeline.**
+`AtomId = SHA-256( serialize( normalize_content( collapse( atom ) ) ) )` —
+structural collapse (1b.a, D17) → content normalization (1d, configurable) →
+serialize + hash (1b.b). Collapse lands now; serialization + SHA-256 is 1b.b.
+
+---
+
 ## Open Questions
 
 ### Q1 — Region folding default
@@ -429,13 +471,16 @@ Deliberately fine-grained; we reason through each before starting it.
 - **Phase 0 — Foundations.** This decision log; crate scaffolding (D10), the
   testing harness (D9), lint/format setup, and the dependency proposal.
 - **Phase 1 — IR + identity, XLIFF-1.2-informed but format-free.**
-  - 1a. IR types (the data model; types only, no behavior).
-  - 1b. Canonical serialization (the exact bytes fed to the hash — resolves Q3).
-  - 1c. Identity / SHA-256 over that serialization.
-  - 1d. Normalization profile interface + canonical default, using an external
-    BCP-47 crate (resolves Q4; implements D7).
-  - 1e. Invariant tests (same-content-diff-payload → same id; diff structure →
-    diff id; `normalize(normalize(x)) == normalize(x)`).
+  - 1a. IR types (the data model; types only, no behavior). ✓ done.
+  - 1b.a. Structural collapse — merge adjacent text, drop empty runs (D17, Q3);
+    no dependencies.
+  - 1b.b. Canonical serialization (D18) + SHA-256 over it → `AtomId`; adds the
+    `sha2` crate.
+  - 1d. Content normalization inserted into the `AtomId` pipeline: NF form,
+    whitespace, case, and BCP-47 via `oxilangtag` (resolves Q4; implements D7,
+    D11).
+  - 1e. Invariant tests over the `AtomId` (distinct chunkings → same id; distinct
+    structure → distinct id; collapse / normalize idempotence).
 - **Phase 2 — XLIFF 1.2 adapter + fidelity gate.** `parse: XLIFF 1.2 → IR`,
   `emit: IR → XLIFF 1.2`, round-trip diff test as a CI gate; language-only-tag
   policy (Q5); `<sub>` extraction (D8).
