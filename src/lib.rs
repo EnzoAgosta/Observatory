@@ -1,16 +1,27 @@
-//! Observatory — the normalization core of a translation data layer.
+//! Observatory turns translation segments into content-addressed **atoms**.
 //!
-//! Observatory turns translation segments (which carry inline formatting) into
-//! content-addressed *atoms*: a canonical, normalized representation whose
-//! identity is `SHA-256(normalized content ‖ canonical BCP-47 language tag)`.
-//! Inline-tag *structure* (open / close / standalone, plus pairing) is part of
-//! the atom; the original dialect-specific tag *payload* is occurrence data that
-//! lives outside identity.
+//! A translation segment — text that may carry inline formatting — is recorded
+//! as an [`Atom`](ir::Atom): a single-language string in which every inline tag
+//! is reduced to an opaque *placeholder*. Each atom has a stable, content-derived
+//! identity, the [`AtomId`](identity::AtomId) — a SHA-256 over a canonical,
+//! normalized serialization of its content and language. Identical content in the
+//! same language always yields the same `AtomId`, regardless of how the segment
+//! was tagged or how its text happened to be split into runs.
 //!
-//! The reasoning behind every design choice is recorded in `docs/DECISIONS.md`.
+//! The crate is a small pipeline:
 //!
-//! Scope (D1): the IR, identity, and normalization only. Storage, retrieval,
-//! embeddings, and the XLIFF adapter live elsewhere or in later phases.
+//! - [`ir`] — the data model: the [`Atom`](ir::Atom), its content nodes, and the
+//!   validated [`LanguageTag`](ir::LanguageTag).
+//! - [`normalize`] — configurable rules
+//!   ([`NormalizationProfile`](normalize::NormalizationProfile)) for how content
+//!   is canonicalized before hashing.
+//! - [`identity`] — the content addressing: structural collapse, canonical
+//!   serialization, and the [`AtomId`](identity::AtomId).
+//!
+//! An atom records only *what a string is*, never how it relates to other
+//! strings. Relationships between strings — translations, reviews, and other
+//! facts — are expressed separately as observations over atoms, not baked into
+//! the atom itself.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]

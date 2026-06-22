@@ -1,35 +1,42 @@
-//! Content-addressed identity for atoms.
+//! Content addressing: turning an [`Atom`] into a stable [`AtomId`].
 //!
-//! `AtomId = SHA-256(serialize(normalize(collapse(atom))))` (D4, D5, D18, D20).
-//! Nothing but normalized content and the canonical language tag is fed to the
-//! hash: direction, domain, provenance and the like are observations, not
-//! identity.
+//! An atom's identity is a SHA-256 digest over a canonical serialization of its
+//! normalized content and language. The pipeline is:
 //!
-//! The pipeline: [`collapse`] performs the fixed structural step (merge adjacent
-//! text, drop empty runs; D17); [`crate::normalize`] applies the caller's
-//! [`NormalizationProfile`] (Unicode form, whitespace, …; D20); [`canonical_bytes`]
-//! lays out the bytes per D18; and [`atom_id`] hashes them. The profile is an
-//! explicit argument and is *not* part of the hash (D20).
+//! 1. **collapse** ([`collapse`]) — the fixed structural step: merge adjacent
+//!    text runs and drop empty ones, leaving placeholders untouched.
+//! 2. **normalize** ([`crate::normalize`]) — apply the caller's
+//!    [`NormalizationProfile`] (Unicode form, whitespace) and lowercase the
+//!    language tag.
+//! 3. **serialize** ([`canonical_bytes`]) — lay the result out as unambiguous,
+//!    length-prefixed bytes.
+//! 4. **hash** ([`atom_id`]) — SHA-256 of those bytes.
+//!
+//! Only normalized content and the language tag feed the hash. The normalization
+//! profile is passed explicitly but is not itself part of the identity — its
+//! effect is already captured in the normalized bytes.
 
 use crate::ir::{Atom, ContentNode};
 use crate::normalize::{NormalizationProfile, normalize_content, normalize_language};
 use sha2::{Digest, Sha256};
 use std::fmt;
 
-/// Version of the canonical serialization scheme (D18), hashed in-band so a
-/// future scheme can never collide with this one in `AtomId` space.
+/// Version of the canonical serialization scheme, hashed in-band so that a future
+/// scheme can never collide with this one in `AtomId` space.
 const SERIALIZATION_VERSION: u8 = 1;
 
-/// Type tag marking a text node in the serialization (D18).
+/// Serialization tag byte marking a text node.
 const TAG_TEXT: u8 = 0x00;
-/// Type tag marking a placeholder node in the serialization (D18).
+/// Serialization tag byte marking a placeholder node.
 const TAG_PLACEHOLDER: u8 = 0x01;
 
 /// The content-addressed identity of an [`Atom`]: the 32-byte SHA-256 digest of
-/// its [`canonical_bytes`] (D4, D18).
+/// its [`canonical_bytes`].
 ///
-/// Identity is via this value, never via structural `Atom` equality (D17): two
-/// `Atom`s that differ only in incidental text chunking share an `AtomId`.
+/// Two atoms have the same `AtomId` exactly when their normalized content and
+/// language match — independent of inline-tag markup, how the text was split into
+/// runs, or the case of the language tag. This is the value to compare and key
+/// by, not structural atom equality.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct AtomId([u8; 32]);
 
@@ -50,16 +57,13 @@ impl fmt::Display for AtomId {
     }
 }
 
-/// Collapses a content sequence into its canonical structural form: adjacent
-/// text runs are merged into one, and empty text runs are dropped (D17).
+/// Collapses a content sequence into its canonical structural form: adjacent text
+/// runs are merged and empty text runs dropped. Placeholders are left exactly as
+/// they are — their count and position carry meaning.
 ///
-/// Placeholders are never merged or dropped — their count and position are
-/// significant (D16). This is the structural step of computing an `AtomId`; it
-/// deliberately does *not* normalize text *content* (Unicode form, whitespace,
-/// case), which is the separate, configurable concern of [`crate::normalize`]
-/// (D20).
-///
-/// Collapse is idempotent: `collapse(&collapse(x)) == collapse(x)`.
+/// This is the structural step of computing an identity; it does not normalize
+/// text *content* (Unicode form, whitespace, case), which is the separate,
+/// configurable job of [`crate::normalize`]. Collapsing is idempotent.
 pub fn collapse(content: &[ContentNode]) -> Vec<ContentNode> {
     let mut collapsed: Vec<ContentNode> = Vec::new();
     let mut pending_text = String::new();
@@ -85,18 +89,18 @@ fn flush_text(pending: &mut String, out: &mut Vec<ContentNode>) {
     }
 }
 
-/// Serializes `atom` into its canonical byte form (D18) — the exact bytes fed to
-/// SHA-256. The content is [collapsed](collapse) and then normalized per
-/// `profile` (D20) first.
+/// Serializes `atom` into its canonical byte form — the exact input to the
+/// identity hash. The content is collapsed and then normalized with `profile`.
 ///
-/// Layout: a version byte; then the (lowercased) language tag as a `u32`-big-
-/// endian length prefix followed by its UTF-8 bytes; then each node. A text node
-/// is `TAG_TEXT` followed by a `u32`-BE length and the UTF-8 bytes; a placeholder
-/// node is a lone `TAG_PLACEHOLDER` (its `data` is excluded from identity, D16).
+/// The layout is unambiguous and length-prefixed: a scheme-version byte; then the
+/// lowercased language tag as a 32-bit big-endian length followed by its UTF-8
+/// bytes; then each content node — a text run as a tag byte, a 32-bit big-endian
+/// length, and its UTF-8 bytes, and a placeholder as a single tag byte (its
+/// markup is deliberately excluded, so only its presence and position count).
 ///
 /// # Panics
 /// Panics if the language tag or a single text run exceeds `u32::MAX` bytes
-/// (~4 GiB) — far beyond any real segment (D18).
+/// (~4 GiB) — far beyond any real segment.
 pub fn canonical_bytes(atom: &Atom, profile: &NormalizationProfile) -> Vec<u8> {
     let mut buf = vec![SERIALIZATION_VERSION];
     write_bytes_field(&mut buf, normalize_language(atom.language()).as_bytes());
@@ -113,14 +117,14 @@ pub fn canonical_bytes(atom: &Atom, profile: &NormalizationProfile) -> Vec<u8> {
     buf
 }
 
-/// Appends a `u32`-big-endian length prefix followed by `bytes`.
+/// Appends a `u32` big-endian length prefix followed by `bytes`.
 fn write_bytes_field(buf: &mut Vec<u8>, bytes: &[u8]) {
-    let len = u32::try_from(bytes.len()).expect("field exceeds u32::MAX bytes (D18 cap)");
+    let len = u32::try_from(bytes.len()).expect("field exceeds u32::MAX bytes");
     buf.extend_from_slice(&len.to_be_bytes());
     buf.extend_from_slice(bytes);
 }
 
-/// Computes the [`AtomId`] of `atom` under `profile`: `SHA-256` of its
+/// Computes the [`AtomId`] of `atom` under `profile`: the SHA-256 of its
 /// [`canonical_bytes`].
 pub fn atom_id(atom: &Atom, profile: &NormalizationProfile) -> AtomId {
     let digest = Sha256::digest(canonical_bytes(atom, profile));
@@ -267,7 +271,7 @@ mod tests {
 
     #[test]
     fn distinct_chunkings_have_the_same_id() {
-        // Structurally different (D17) yet identical identity.
+        // Structurally different yet identical identity.
         let chunked = en([ContentNode::text("a"), ContentNode::text("b")]);
         let merged = en([ContentNode::text("ab")]);
         assert_ne!(chunked, merged);
@@ -276,7 +280,7 @@ mod tests {
 
     #[test]
     fn placeholder_data_does_not_affect_id() {
-        // D16: a placeholder contributes only its presence, not its markup.
+        // A placeholder contributes only its presence, not its markup.
         let bold = en([
             ContentNode::text("Click "),
             ContentNode::placeholder("<b>"),
@@ -306,7 +310,7 @@ mod tests {
 
     #[test]
     fn language_changes_the_id() {
-        // Homograph separation (D5): same bytes, different language → different id.
+        // Same bytes, different language → different id (e.g. the en/de "Gift").
         let english = en([ContentNode::text("Gift")]);
         let german = Atom::new(
             LanguageTag::parse("de-de").unwrap(),
@@ -317,7 +321,7 @@ mod tests {
 
     #[test]
     fn language_case_does_not_affect_id() {
-        // The tag is lowercased in normalization (D7), so case can't fragment.
+        // The tag is lowercased when computing identity, so case can't fragment.
         let upper = Atom::new(
             LanguageTag::parse("en-US").unwrap(),
             [ContentNode::text("hi")],
@@ -326,7 +330,7 @@ mod tests {
             LanguageTag::parse("en-us").unwrap(),
             [ContentNode::text("hi")],
         );
-        assert_ne!(upper, lower); // structurally distinct (faithful tags, D19)
+        assert_ne!(upper, lower); // structurally distinct (faithful tags)
         assert_eq!(id(&upper), id(&lower)); // ... same identity
     }
 

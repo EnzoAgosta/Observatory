@@ -1,21 +1,20 @@
-//! Configurable content normalization (D6) — the layer between structural
-//! collapse and serialization in the `AtomId` pipeline.
+//! Configurable content normalization — the step between structural collapse and
+//! serialization when computing an atom's identity.
 //!
-//! A [`NormalizationProfile`] is a small, transparent bundle of knobs deciding
-//! exactly how a string is transformed before hashing. It is always passed
-//! *explicitly* to the identity functions, never implicitly defaulted (D20): the
-//! transformation is integral to how an `AtomId` is derived, so it must be
-//! visible at the call site. The profile is **not** part of the hash (D20) — its
-//! effect is already in the normalized bytes; provenance is storage-layer
-//! metadata.
+//! A [`NormalizationProfile`] bundles the knobs that decide exactly how a string
+//! is transformed before it is hashed: which Unicode normalization form to apply
+//! and how to treat edge whitespace. It is passed explicitly to the identity
+//! functions, so the transformation behind an `AtomId` is always visible at the
+//! call site. The profile is not part of the identity itself — its effect lives
+//! entirely in the normalized bytes.
 
 use crate::ir::{ContentNode, LanguageTag};
 use unicode_normalization::UnicodeNormalization;
 
-/// How a string is normalized before it contributes to an `AtomId` (D6, D20).
+/// How a string is normalized before it contributes to an atom's identity.
 ///
-/// Construct one explicitly, or pass [`NormalizationProfile::DEFAULT`]. The knobs
-/// are deliberately few and conservative; more are added only as need is shown.
+/// Construct one directly, or use [`NormalizationProfile::DEFAULT`]. The knobs are
+/// deliberately few and conservative.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NormalizationProfile {
     /// Which Unicode normalization form to apply to text runs.
@@ -25,7 +24,7 @@ pub struct NormalizationProfile {
 }
 
 impl NormalizationProfile {
-    /// The conservative default: NFC, trimming only the segment's outer edges.
+    /// The conservative default: NFC, trimming only a segment's outer edges.
     pub const DEFAULT: NormalizationProfile = NormalizationProfile {
         unicode: UnicodeForm::Nfc,
         whitespace: WhitespacePolicy::TrimOuter,
@@ -38,7 +37,7 @@ pub enum UnicodeForm {
     /// Canonical composition (NFC) — lossless, the standard choice.
     Nfc,
     /// Compatibility composition (NFKC) — also folds compatibility characters
-    /// (ligatures, full-width forms, …). More aggressive; opt-in.
+    /// such as ligatures and full-width forms. More aggressive.
     Nfkc,
 }
 
@@ -48,18 +47,17 @@ pub enum WhitespacePolicy {
     /// Leave all whitespace exactly as recorded.
     Preserve,
     /// Trim leading whitespace from the segment's first text run and trailing
-    /// whitespace from its last. Whitespace internal to the segment — including
-    /// next to placeholders — is preserved (D20).
+    /// whitespace from its last. Whitespace inside the segment — including next to
+    /// placeholders — is preserved.
     TrimOuter,
 }
 
-/// Normalizes the text content of a (collapsed) node sequence for hashing (D6).
+/// Normalizes the text content of a collapsed node sequence.
 ///
-/// Applies the profile's Unicode form to each text run, then — for
-/// [`WhitespacePolicy::TrimOuter`] — trims the segment's outer edges, dropping
-/// any run left empty. Placeholders pass through untouched (D16).
-///
-/// Expects already-[collapsed](crate::identity::collapse) input.
+/// Applies the profile's Unicode form to each text run, then — under
+/// [`WhitespacePolicy::TrimOuter`] — trims the segment's outer edges, dropping any
+/// run left empty. Placeholders pass through untouched. Expects already-collapsed
+/// input (see [`crate::identity::collapse`]).
 pub fn normalize_content(
     content: &[ContentNode],
     profile: &NormalizationProfile,
@@ -82,8 +80,8 @@ pub fn normalize_content(
     nodes
 }
 
-/// Normalizes a language tag for hashing: lowercased (D7). The tag is BCP-47, so
-/// ASCII-lowercasing is sufficient and deterministic.
+/// Normalizes a language tag for hashing by lowercasing it. BCP-47 tags are
+/// ASCII, so this is deterministic.
 pub fn normalize_language(tag: &LanguageTag) -> String {
     tag.as_str().to_ascii_lowercase()
 }
@@ -170,7 +168,7 @@ mod tests {
             ],
             &NormalizationProfile::DEFAULT,
         );
-        // Leading of first and trailing of last gone; internal spaces kept.
+        // Leading of the first run and trailing of the last gone; internal kept.
         assert_eq!(
             out,
             [
