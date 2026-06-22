@@ -694,6 +694,54 @@ later. The conversion is mechanical (move `src/`, `tests/`, and the crate-level
 `observatory-xliff` skeleton), and `cargo test` at the root confirms nothing
 broke.
 
+### D25 — Crate naming: `observatory-core` + `observatory-xliff12`; per-crate READMEs
+**Status:** Accepted &nbsp;|&nbsp; **Refines the naming clause of D24**
+
+**Context.** D24's naming clause followed the ecosystem convention of giving the
+core the bare project name (`tokio`, `serde`). But "observatory" is the name of
+the *system* and the *repo* — using it for one member crate shadows the whole
+project and makes "observatory the system" vs "observatory the crate" ambiguous
+in prose, docs, and dependency lists. Separately, D3 commits hard to XLIFF 1.2
+only, and that scope is invisible at the dependency line if the adapter is named
+plain `observatory-xliff`.
+
+**Decision.**
+- **Core crate: `observatory-core`** (directory `crates/observatory-core/`). The
+  name already matches the crate description ("Normalization core for a
+  translation data layer") and D1's "normalization engine." In code:
+  `use observatory_core::ir::Atom`.
+- **Adapter crate: `observatory-xliff12`** (directory
+  `crates/observatory-xliff12/`). crates.io forbids dots, so `12` is the cleanest
+  encoding of "1.2"; the name makes the 1.2-only contract (D3) visible at the
+  dependency line and leaves room for a future `observatory-xliff2` rather than
+  overloading one crate.
+- **Cross-crate dependency updated**: the adapter's dependency becomes
+  `observatory-core = { path = "../observatory-core", version = "0.1.0" }`.
+
+**Per-crate READMEs.**
+- **Root `README.md`** describes Observatory as a *system* — the thesis (atoms
+  as content-addressed nodes, observations as append-only facts, the
+  decoupling, the event-sourcing/lakehouse shape, Lance as substrate, DuckDB as
+  query engine), the workspace layout, and pointers to each crate's README and to
+  `docs/DECISIONS.md`. No code example here; the tested example lives in the core
+  crate's README.
+- **`crates/observatory-core/README.md`** describes this crate: the atom IR,
+  `AtomId`, normalization, the pipeline, and the tested code example (importing
+  `observatory_core::…`). This is the current root README content, relocated.
+- **`crates/observatory-xliff12/README.md`** describes this crate: D3 (XLIFF 1.2
+  only), the closed inline-tag set, how it relates to `observatory-core`, Q5
+  (language-only tags) as open scope, and current status (skeleton).
+
+**Why.** A system repo where one member crate shadows the project name is a
+permanent ambiguity in every doc, issue, and `Cargo.toml` that references it;
+  `-core` is the conventional disambiguation (cf. `bevy_core`, `tokio-util`).
+  Encoding the XLIFF version in the adapter name surfaces D3's hard 1.2-only
+  commitment at the dependency line rather than only in the decision log, and
+  preserves a clean naming lane for a hypothetical future 2.x adapter. The
+  per-crate READMEs match the repo's own "describe what each thing is, keep
+  relationships separate" shape: the root is the thesis, each crate documents
+  itself.
+
 ---
 
 ### Q5 — Language-only tags at the XLIFF boundary
