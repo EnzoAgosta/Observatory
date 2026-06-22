@@ -8,3 +8,4 @@ description = "Normalization core for a translation data layer: content-addresse
 [dependencies]
 oxilangtag = "0.1.6"
 sha2 = "0.11.0"
+unicode-normalization = "0.1.25"
