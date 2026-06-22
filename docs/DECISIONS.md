@@ -39,7 +39,7 @@ before the floors that rest on it.
 ---
 
 ### D2 — Atom granularity: kind + pairing, no payload
-**Status:** Accepted
+**Status:** Superseded by D16
 
 **Context.** A segment with inline tags is "a string + a document-specific
 structure" (§7). The same content with different tag encodings (`<g id=3>` vs
@@ -301,7 +301,7 @@ the atom stable across differing dialect id schemes (D2).
 ---
 
 ### D15 — `Payload` stays opaque for Phase 1
-**Status:** Accepted
+**Status:** Superseded by D16
 
 **Decision.** `Payload` — the recoverable, dialect-specific tag data that is
 never hashed (D2) — is modeled as a thin **opaque blob** for Phase 1
@@ -311,6 +311,46 @@ round-trip requirements are concrete.
 **Why.** It never affects identity, so its shape should follow the round-trip
 needs we will only know once we parse real XLIFF. Avoids speculative structure
 (KISS).
+
+---
+
+### D16 — Uniform placeholders: identity by position and count, not kind
+**Status:** Accepted &nbsp;|&nbsp; **Supersedes D2 and D15; refines D14**
+
+**Context.** D2 had the atom keep placeholder *kind* (open / close / standalone)
+and pairing in identity. But encoding kind requires *interpreting* each
+placeholder's role — exactly the interpretation D14 says this layer must not do
+— and the thesis (§7) lists a paired `<g>` vs a standalone `<ph/>` as "the same
+content, different encodings" that should *not* fragment.
+
+**Decision.**
+- A content node is one of exactly **two** kinds: **Text** or **Placeholder**.
+  No open / close / standalone distinction is recorded.
+- A placeholder is **opaque**: its raw original markup is stored as the node's
+  `data` and is never interpreted. (This folds D15 — there is no separate
+  `Payload` type; the placeholder's `data` *is* the opaque payload.)
+- **Identity distinguishes placeholders only by position and count**, never by
+  kind or content. The placeholder's `data` never enters the hash (D2's
+  no-payload-in-identity rule survives); each placeholder contributes a single
+  uniform canonical marker to the hashed projection.
+- **Reconstruction is the in-order join of every node's `data`** — a blind,
+  lossless concatenation (the reversible half of D14).
+
+**Consequence (accepted consciously).** Structurally different taggings of
+identical text collapse to one atom: `Click <b>here</b>` (a pair) and
+`Click {0}here{1}` (two standalones) share an `AtomId`. The translatable text is
+identical; the tagging difference is occurrence data recoverable from `data`,
+and "what kind of placeholder" — if ever wanted — is a derivation one layer up,
+never part of identity. Round-trip is unaffected (it uses raw `data`, not
+identity).
+
+**Model.**
+- `Atom { language, content: Vec<ContentNode> }` — order is significant.
+- `ContentNode { kind: ContentKind, data: String }` — `data` is raw, UTF-8
+  (XLIFF is XML text, D3).
+- `ContentKind { Text, Placeholder }`.
+- Canonical-by-construction reduces to: **merge adjacent Text, drop empty Text**
+  (no links to renumber anymore).
 
 ---
 
