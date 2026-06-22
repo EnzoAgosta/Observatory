@@ -14,6 +14,9 @@
 //! equality (`==`) is a different relation from identity. **Dedup and identity
 //! are always via `AtomId`, never `==`.** See `docs/DECISIONS.md` (D16, D17).
 
+use oxilangtag::LanguageTag as ParsedTag;
+use std::fmt;
+
 /// A content-addressed, single-language string.
 ///
 /// The order of [`content`](Atom::content) is significant. Construction is
@@ -96,32 +99,80 @@ impl ContentNode {
     }
 }
 
-/// A BCP-47 language tag.
+/// A validated BCP-47 language tag (D7, D11, D19).
 ///
-/// A thin, unvalidated newtype for now. Real handling — lowercase
-/// canonicalization, a mandatory region subtag, and well-formedness via
-/// `oxilangtag` (D7, D11) — wires in at Phase 1d.
+/// Constructed via [`LanguageTag::parse`], which requires a well-formed tag with
+/// a region subtag (script and other subtags are optional). The original case is
+/// preserved faithfully; lowercasing for identity happens in the normalization
+/// step (Phase 1d), so `parse("en-US")` and `parse("en-us")` are structurally
+/// unequal but share an `AtomId`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LanguageTag(String);
+pub struct LanguageTag(ParsedTag<String>);
 
 impl LanguageTag {
-    /// Wraps a raw tag string. No validation yet (Phase 1d).
-    pub fn new(tag: impl Into<String>) -> Self {
-        Self(tag.into())
+    /// Parses and validates a BCP-47 tag, requiring well-formedness and a region
+    /// subtag (D7, D11, D19). Script and other subtags are optional. Validity is
+    /// well-formedness only — no IANA registry check — so private-use tags such
+    /// as `qaa-QM` are accepted.
+    ///
+    /// # Errors
+    /// [`LanguageTagError::Malformed`] if `tag` is not a well-formed BCP-47 tag,
+    /// or [`LanguageTagError::MissingRegion`] if it is well-formed but carries no
+    /// region subtag.
+    pub fn parse(tag: impl Into<String>) -> Result<Self, LanguageTagError> {
+        let tag = tag.into();
+        match ParsedTag::parse(tag.clone()) {
+            Ok(parsed) if parsed.region().is_some() => Ok(Self(parsed)),
+            Ok(_) => Err(LanguageTagError::MissingRegion { tag }),
+            Err(_) => Err(LanguageTagError::Malformed { tag }),
+        }
     }
 
-    /// The raw tag string.
+    /// The tag as written — original case preserved (D19).
     pub fn as_str(&self) -> &str {
-        &self.0
+        self.0.as_str()
     }
 }
+
+/// Why a [`LanguageTag`] failed to [`parse`](LanguageTag::parse) (D19).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LanguageTagError {
+    /// The tag is not well-formed per the BCP-47 (RFC 5646) grammar.
+    Malformed {
+        /// The offending tag.
+        tag: String,
+    },
+    /// The tag is well-formed but carries no region subtag, which is required.
+    MissingRegion {
+        /// The offending tag.
+        tag: String,
+    },
+}
+
+impl fmt::Display for LanguageTagError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Malformed { tag } => {
+                write!(f, "not a well-formed BCP-47 language tag: {tag:?}")
+            }
+            Self::MissingRegion { tag } => {
+                write!(
+                    f,
+                    "language tag {tag:?} is missing a required region subtag"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for LanguageTagError {}
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn lang() -> LanguageTag {
-        LanguageTag::new("en-us")
+        LanguageTag::parse("en-us").unwrap()
     }
 
     #[test]
@@ -174,9 +225,58 @@ mod tests {
     }
 
     #[test]
-    fn language_tag_preserves_its_raw_string() {
-        let tag = LanguageTag::new("en-us");
-        assert_eq!(tag.as_str(), "en-us");
+    fn parse_accepts_language_and_region() {
+        assert_eq!(LanguageTag::parse("en-US").unwrap().as_str(), "en-US");
+    }
+
+    #[test]
+    fn parse_preserves_case_faithfully() {
+        // No normalization at construction (D19); lowercasing is deferred to 1d.
+        assert_eq!(LanguageTag::parse("EN-us").unwrap().as_str(), "EN-us");
+    }
+
+    #[test]
+    fn parse_requires_a_region() {
+        assert_eq!(
+            LanguageTag::parse("en"),
+            Err(LanguageTagError::MissingRegion {
+                tag: "en".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn parse_rejects_malformed_tags() {
+        assert!(matches!(
+            LanguageTag::parse("not a tag"),
+            Err(LanguageTagError::Malformed { .. })
+        ));
+        // Underscores are not BCP-47 well-formed (hyphen-only).
+        assert!(matches!(
+            LanguageTag::parse("en_US"),
+            Err(LanguageTagError::Malformed { .. })
+        ));
+    }
+
+    #[test]
+    fn parse_script_is_optional() {
+        assert!(LanguageTag::parse("sr-RS").is_ok()); // no script
+        assert!(LanguageTag::parse("sr-Cyrl-RS").is_ok()); // with script
+    }
+
+    #[test]
+    fn parse_accepts_well_formed_private_use_tags() {
+        // Well-formedness only, no registry check (D11).
+        assert!(LanguageTag::parse("qaa-QM").is_ok());
+    }
+
+    #[test]
+    fn language_tag_equality_is_case_sensitive() {
+        // Faithful (D17/D19): same identity later, but structurally distinct now.
+        assert_ne!(
+            LanguageTag::parse("en-US").unwrap(),
+            LanguageTag::parse("en-us").unwrap()
+        );
     }
 
     #[test]

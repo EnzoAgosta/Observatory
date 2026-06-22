@@ -133,7 +133,7 @@ mod tests {
 
     /// Builds an `en-us` atom from the given nodes — keeps the tests terse.
     fn en(nodes: impl IntoIterator<Item = ContentNode>) -> Atom {
-        Atom::new(LanguageTag::new("en-us"), nodes)
+        Atom::new(LanguageTag::parse("en-us").unwrap(), nodes)
     }
 
     #[test]
@@ -287,7 +287,10 @@ mod tests {
     fn language_changes_the_id() {
         // Homograph separation (D5): same bytes, different language → different id.
         let english = en([ContentNode::text("Gift")]);
-        let german = Atom::new(LanguageTag::new("de-de"), [ContentNode::text("Gift")]);
+        let german = Atom::new(
+            LanguageTag::parse("de-de").unwrap(),
+            [ContentNode::text("Gift")],
+        );
         assert_ne!(atom_id(&english), atom_id(&german));
     }
 
