@@ -1,14 +1,12 @@
-[package]
-name = "observatory"
-version = "0.1.0"
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
 edition = "2024"
 license = "MIT OR Apache-2.0"
-description = "Normalization core for a translation data layer: content-addressed string atoms and observations."
 
-[dependencies]
+[workspace.dependencies]
 oxilangtag = "0.1.6"
 sha2 = "0.11.0"
 unicode-normalization = "=0.1.25"
-
-[dev-dependencies]
-proptest = "1.11.0"
