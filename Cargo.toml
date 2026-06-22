@@ -6,4 +6,5 @@ license = "MIT OR Apache-2.0"
 description = "Normalization core for a translation data layer: content-addressed string atoms and observations."
 
 [dependencies]
+oxilangtag = "0.1.6"
 sha2 = "0.11.0"
