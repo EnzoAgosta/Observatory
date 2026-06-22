@@ -473,6 +473,51 @@ separates them via content; a caller-supplied script flows into the id faithfull
 
 ---
 
+### D20 — Normalization profile: explicit input, not part of the `AtomId`
+**Status:** Accepted &nbsp;|&nbsp; **Resolves Q4**
+
+**Model.** A small, transparent struct of enums (D6):
+- `NormalizationProfile { unicode: UnicodeForm, whitespace: WhitespacePolicy }`
+- `UnicodeForm { Nfc, Nfkc }`, `WhitespacePolicy { Preserve, TrimOuter }`
+- `NormalizationProfile::DEFAULT = { Nfc, TrimOuter }`.
+
+Knobs are deliberately few; more (inner-whitespace collapse, region-fold, …)
+are added only as need is shown.
+
+**Explicit, never implicit.** `atom_id` / `canonical_bytes` take a
+`&NormalizationProfile` argument — there is no implicit default. Normalization is
+integral to how an id is derived, so it must be visible at the call site; callers
+pass `NormalizationProfile::DEFAULT` to opt into our defaults.
+
+**Not part of the hash.** The profile is *not* serialized into the hash input.
+Its entire effect is already in the normalized bytes: if two profiles yield the
+same normalized content they must produce the same id (else identical content
+fragments, §7); if they yield different content the ids already differ. Hashing
+the profile would be redundant-or-harmful, and would churn *every* id on any knob
+change (vs. only the atoms actually affected).
+
+*Contrast with the serialization version (D18), which IS hashed:* the version
+separates byte-**layout** ambiguity (different atoms could collide to identical
+bytes — silent); a profile is a content **transformation** whose result is
+self-evident in the bytes. Layout needs in-band separation; transformation does
+not.
+
+**Provenance is storage-layer metadata.** "Which profile produced this id" is
+worth recording — but as metadata next to the id in the storage layer (out of
+scope here), never inside the id.
+
+**Default rules.** NFC (lossless, standard); trim **outer** whitespace only — the
+leading edge of the segment's first text run and the trailing edge of its last,
+with internal / placeholder-adjacent whitespace preserved; language tag
+lowercased (D7, fixed); region-folding deferred.
+
+**Consequence.** Cross-deployment `AtomId` sharing (§10) requires agreeing on
+**both** the serialization version and the normalization profile — a documented
+precondition that cannot be self-enforced by the id without breaking
+single-profile dedup.
+
+---
+
 ## Open Questions
 
 ### Q1 — Region folding default
@@ -484,13 +529,10 @@ and remains open: annotations can wrap arbitrary content and carry semantics
 (terms, comments) that may or may not belong in identity. Deferred past Phase 1.
 
 ### Q3 — Canonical serialization byte layout
-The precise, stable byte encoding of `(content placeholders + text) ‖ language`
-fed to SHA-256. The crux of Phase 1 (sub-phase 1b) — must be unambiguous and
-version-stable. Needs dedicated discussion before 1b.
+**Resolved by D18** (length-prefixed TLV, `u32`-BE, version byte, no count).
 
 ### Q4 — Normalization profile interface
-The shape of a "named profile" in Rust: trait, config struct, or data. To be
-designed in Phase 1d, once the IR types exist.
+**Resolved by D20** (transparent struct of enums, explicit argument, not hashed).
 
 ### Q5 — Language-only tags at the XLIFF boundary
 D7 makes region mandatory, but XLIFF 1.2 commonly uses language-only tags
