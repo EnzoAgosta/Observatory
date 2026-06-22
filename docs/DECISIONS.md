@@ -436,6 +436,43 @@ serialize + hash (1b.b). Collapse lands now; serialization + SHA-256 is 1b.b.
 
 ---
 
+### D19 — `LanguageTag` validation: parse + required region (script optional), faithful storage
+**Status:** Accepted &nbsp;|&nbsp; **Refines D7, D11**
+
+**Decision.**
+- Construct via `LanguageTag::parse(s) -> Result<_, LanguageTagError>`. Hard-fail
+  if the tag is not well-formed BCP-47 (`Malformed`) or lacks a region subtag
+  (`MissingRegion`); both carry the offending tag. Errors are our own type —
+  oxilangtag's error stays internal.
+- **Required: primary language + region. Optional: script, variants, extensions,
+  private-use** — accepted when well-formed, never required. Requiring script
+  would reject the normal Suppress-Script form (`en-US`, not `en-Latn-US`).
+- **Validity = well-formedness only** (oxilangtag `parse`), no IANA registry
+  check (D11); private-use / unusual-but-well-formed tags (`qaa-qm`) are accepted.
+- **Faithful storage.** `parse` preserves the original case; lowercasing (and any
+  later region-folding) happen in the 1d normalization step, not at construction
+  — symmetric with text (D17). So `parse("en-US")` and `parse("en-us")` are
+  structurally `!=` but yield the same `AtomId`. (oxilangtag's `==` is itself
+  case-sensitive, and its `parse_and_normalize` was rejected precisely because it
+  normalizes at construction.)
+- Internally wraps `oxilangtag::LanguageTag<String>` (private field) for
+  validated subtag accessors and faithful `Eq`; oxilangtag never appears in the
+  public API (swappable, §10).
+- **Separators: hyphen-only** — oxilangtag rejects `en_US`, so we inherit
+  strictness; converting `_`→`-` is the caller's job.
+
+**Why.** Balances strictness (fail loud on malformed / missing region — needed
+for determinism and homograph separation, D5) with usability (don't over-require
+script). Keeps the gate/normalize split clean: validate at construction,
+normalize at identity.
+
+**Note (bi-scriptal languages).** Script need not be required even for Serbian
+and the like: differing scripts are different content bytes, so identity already
+separates them via content; a caller-supplied script flows into the id faithfully
+(`sr-cyrl-rs` ≠ `sr-rs`).
+
+---
+
 ## Open Questions
 
 ### Q1 — Region folding default
