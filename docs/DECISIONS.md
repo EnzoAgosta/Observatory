@@ -624,6 +624,24 @@ designed *after* the XLIFF adapter (Phase 2) has produced concrete ingest
 experience — not before. Designing the read model before seeing the writes would
 reproduce the mistake the atom layer was specifically careful to avoid.
 
+### D23 — Commit `Cargo.lock` for the library crate
+**Status:** Accepted &nbsp;|&nbsp; **Refines D21**
+
+**Decision.** `Cargo.lock` is committed to the repository (not gitignored),
+despite the older Rust convention of omitting it for libraries.
+
+**Why.** A library's `Cargo.lock` does **not** affect downstream consumers —
+Cargo ignores it when the crate is used as a dependency; it only governs this
+crate's own dev and CI builds, so the usual cost of committing it for a library
+(constraining a consumer's dependency graph) does not exist here. What it buys is
+exactly D21's value: the lock file is the mechanism that enforces the exact pin
+on `unicode-normalization` (and pins transitive deps) at build time, so two CI
+runs can't silently resolve to different patch versions and drift the `AtomId`
+bytes in our own tests. The "don't commit for libraries" advice is increasingly
+considered outdated and never traded against the reproducibility cost it was
+meant to save. Recorded so the choice is deliberate, not accidental, and so a
+future "shouldn't this be gitignored?" PR has an answer.
+
 ---
 
 ### Q5 — Language-only tags at the XLIFF boundary

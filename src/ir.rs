@@ -83,8 +83,7 @@ impl ContentNode {
         }
     }
 
-    /// Whether this node is a placeholder (`true`) or translatable text
-    /// (`false`).
+    /// Whether this node is a placeholder.
     pub fn is_placeholder(&self) -> bool {
         self.is_placeholder
     }
