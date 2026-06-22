@@ -223,6 +223,48 @@ shape. KISS: one crate with clear module boundaries; split later if it earns it.
 
 ---
 
+### D11 — BCP-47: enforce well-formedness, not registry validity; crate `oxilangtag`
+**Status:** Accepted &nbsp;|&nbsp; **Refines D7**
+
+**Decision.** The identity layer requires a language tag that is **well-formed**
+(matches the BCP-47 grammar) **with a region subtag present** (D7), and
+canonicalizes it to lowercase. It does **not** check **validity** (whether each
+subtag exists in the IANA registry). Parsing uses **`oxilangtag`** (Oxigraph
+project): well-formedness only, with subtag accessors, no bundled registry.
+
+**Why.**
+- *Validity is policy, and policy lives above the fixed identity layer (D6).*
+  "Which tags count as real" is a caller/profile decision, not an identity one.
+- *A legitimate use case needs it:* someone may deliberately use a synthetic or
+  private locale (e.g. `qaa-zz`, or an `x-…` private-use tag) to force separate
+  storage / control dedup. A library that rejected such tags would impose policy
+  it has no business imposing.
+- *The clean, predictable line is "well-formed + region present," not "registry
+  valid."* Note BCP-47 already reserves registry-valid private-use ranges
+  (`qaa`–`qtz`; regions `ZZ`, `QM`–`QZ`, `XA`–`XZ`; the `x-…` subtag), so even
+  strict validation wouldn't behave as one might naively expect.
+
+If registry validation is ever wanted, it becomes an optional normalization-
+profile or app-layer check (D6 territory) — never baked into identity.
+
+---
+
+### D12 — License: dual `MIT OR Apache-2.0`
+**Status:** Accepted
+
+**Decision.** License the crate **`MIT OR Apache-2.0`** (the Rust-ecosystem
+default), shipping both `LICENSE-MIT` and `LICENSE-APACHE` at the repo root and
+declaring the SPDX expression in `Cargo.toml`.
+
+**Why.** Permissive, matching §10's open-core intent. Dual-licensing costs
+essentially nothing (two text files) while letting downstream users pick MIT's
+simplicity or Apache-2.0's explicit patent grant + retaliation clause, and
+maximizes compatibility (e.g. GPLv2 projects can consume the MIT side). Copyright
+holder recorded as "Enzo Agosta, 2026" — adjust if a different attribution is
+wanted.
+
+---
+
 ## Open Questions
 
 ### Q1 — Region folding default
