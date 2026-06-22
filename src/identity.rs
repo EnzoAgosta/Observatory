@@ -20,6 +20,7 @@ use crate::ir::{Atom, ContentNode};
 use crate::normalize::{NormalizationProfile, normalize_content, normalize_language};
 use sha2::{Digest, Sha256};
 use std::fmt;
+use std::str::FromStr;
 
 /// Version of the canonical serialization scheme, hashed in-band so that a future
 /// scheme can never collide with this one in `AtomId` space.
@@ -54,6 +55,54 @@ impl fmt::Display for AtomId {
             write!(f, "{byte:02x}")?;
         }
         Ok(())
+    }
+}
+
+impl From<[u8; 32]> for AtomId {
+    fn from(digest: [u8; 32]) -> Self {
+        Self(digest)
+    }
+}
+
+impl FromStr for AtomId {
+    type Err = AtomIdParseError;
+
+    /// Parses the 64-character hex string produced by the `Display` impl back
+    /// into an `AtomId`. Both lower- and upper-case hex digits are accepted.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let bytes = s.as_bytes();
+        if bytes.len() != 64 {
+            return Err(AtomIdParseError);
+        }
+        let mut digest = [0u8; 32];
+        for (out, pair) in digest.iter_mut().zip(bytes.chunks_exact(2)) {
+            let hi = hex_digit(pair[0]).ok_or(AtomIdParseError)?;
+            let lo = hex_digit(pair[1]).ok_or(AtomIdParseError)?;
+            *out = (hi << 4) | lo;
+        }
+        Ok(Self(digest))
+    }
+}
+
+/// Returned when a string is not a valid 64-character hex `AtomId`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AtomIdParseError;
+
+impl fmt::Display for AtomIdParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("invalid AtomId: expected 64 hexadecimal characters")
+    }
+}
+
+impl std::error::Error for AtomIdParseError {}
+
+/// Maps one ASCII hex-digit byte to its 0–15 value.
+fn hex_digit(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
     }
 }
 
@@ -393,5 +442,31 @@ mod tests {
     #[test]
     fn atom_id_exposes_32_bytes() {
         assert_eq!(id(&en([ContentNode::text("x")])).as_bytes().len(), 32);
+    }
+
+    #[test]
+    fn atom_id_round_trips_through_hex() {
+        let original = id(&en([ContentNode::text("hello")]));
+        let parsed: AtomId = original.to_string().parse().unwrap();
+        assert_eq!(parsed, original);
+    }
+
+    #[test]
+    fn atom_id_round_trips_through_bytes() {
+        let original = id(&en([ContentNode::text("hello")]));
+        assert_eq!(AtomId::from(*original.as_bytes()), original);
+    }
+
+    #[test]
+    fn atom_id_parse_accepts_uppercase_hex() {
+        let original = id(&en([ContentNode::text("hello")]));
+        let upper = original.to_string().to_uppercase();
+        assert_eq!(upper.parse::<AtomId>().unwrap(), original);
+    }
+
+    #[test]
+    fn atom_id_parse_rejects_bad_input() {
+        assert!("abc".parse::<AtomId>().is_err()); // wrong length
+        assert!("z".repeat(64).parse::<AtomId>().is_err()); // right length, non-hex
     }
 }
