@@ -3,32 +3,39 @@
 //!
 //! A [`NormalizationProfile`] bundles the knobs that decide exactly how a string
 //! is transformed before it is hashed: which Unicode normalization form to apply
-//! and how to treat edge whitespace. It is passed explicitly to the identity
-//! functions, so the transformation behind an `AtomId` is always visible at the
-//! call site. The profile is not part of the identity itself — its effect lives
-//! entirely in the normalized bytes.
+//! and which code points to trim from a segment's outer edges. It is passed
+//! explicitly to the identity functions, so the transformation behind an
+//! `AtomId` is always visible at the call site. The profile is not part of the
+//! identity itself — its effect lives entirely in the normalized bytes.
 
 use crate::ir::{ContentNode, LanguageTag};
 use unicode_normalization::UnicodeNormalization;
 
 /// How a string is normalized before it contributes to an atom's identity.
 ///
-/// Construct one directly, or use [`NormalizationProfile::DEFAULT`]. The knobs are
-/// deliberately few and conservative.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Construct one directly, or use [`NormalizationProfile::default`]. Every input
+/// to the identity hash is captured here explicitly — there is no reliance on a
+/// library's notion of "whitespace" or similar ambient behavior.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NormalizationProfile {
     /// Which Unicode normalization form to apply to text runs.
     pub unicode: UnicodeForm,
-    /// How whitespace at the outer edges of a segment is treated.
-    pub whitespace: WhitespacePolicy,
+    /// Code points trimmed from a segment's outer edges. Leading and trailing
+    /// runs of these characters are removed, stopping at the first character not
+    /// in the set. An empty set trims nothing. Content internal to the segment —
+    /// including next to placeholders — is always preserved.
+    pub edge_trim: Vec<char>,
 }
 
-impl NormalizationProfile {
-    /// The conservative default: NFC, trimming only a segment's outer edges.
-    pub const DEFAULT: NormalizationProfile = NormalizationProfile {
-        unicode: UnicodeForm::Nfc,
-        whitespace: WhitespacePolicy::TrimOuter,
-    };
+impl Default for NormalizationProfile {
+    /// The conservative default: NFC, trimming ASCII tab, newline, carriage
+    /// return, and space from a segment's outer edges.
+    fn default() -> Self {
+        Self {
+            unicode: UnicodeForm::Nfc,
+            edge_trim: vec!['\t', '\n', '\r', ' '],
+        }
+    }
 }
 
 /// The Unicode normalization form applied to text runs.
@@ -41,23 +48,12 @@ pub enum UnicodeForm {
     Nfkc,
 }
 
-/// How whitespace at the outer edges of a segment is treated.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WhitespacePolicy {
-    /// Leave all whitespace exactly as recorded.
-    Preserve,
-    /// Trim leading whitespace from the segment's first text run and trailing
-    /// whitespace from its last. Whitespace inside the segment — including next to
-    /// placeholders — is preserved.
-    TrimOuter,
-}
-
 /// Normalizes the text content of a collapsed node sequence.
 ///
-/// Applies the profile's Unicode form to each text run, then — under
-/// [`WhitespacePolicy::TrimOuter`] — trims the segment's outer edges, dropping any
-/// run left empty. Placeholders pass through untouched. Expects already-collapsed
-/// input (see [`crate::identity::collapse`]).
+/// Applies the profile's Unicode form to each text run, then trims the segment's
+/// outer edges of any characters in `edge_trim`, dropping a run left empty.
+/// Placeholders pass through untouched. Expects already-collapsed input (see
+/// [`crate::identity::collapse`]).
 pub fn normalize_content(
     content: &[ContentNode],
     profile: &NormalizationProfile,
@@ -73,8 +69,8 @@ pub fn normalize_content(
         })
         .collect();
 
-    if profile.whitespace == WhitespacePolicy::TrimOuter {
-        trim_outer(&mut nodes);
+    if !profile.edge_trim.is_empty() {
+        trim_outer(&mut nodes, &profile.edge_trim);
     }
 
     nodes
@@ -94,12 +90,12 @@ fn normalize_text(text: &str, form: UnicodeForm) -> String {
     }
 }
 
-/// Trims leading whitespace from the first text run and trailing whitespace from
-/// the last, dropping a run left empty. Internal whitespace is untouched.
-fn trim_outer(nodes: &mut Vec<ContentNode>) {
+/// Trims leading characters in `trim` from the first text run and trailing ones
+/// from the last, dropping a run left empty. Internal content is untouched.
+fn trim_outer(nodes: &mut Vec<ContentNode>, trim: &[char]) {
     let leading = match nodes.first() {
         Some(node) if !node.is_placeholder() => {
-            let trimmed = node.data().trim_start();
+            let trimmed = node.data().trim_start_matches(|c| trim.contains(&c));
             (trimmed.len() != node.data().len()).then(|| trimmed.to_owned())
         }
         _ => None,
@@ -114,7 +110,7 @@ fn trim_outer(nodes: &mut Vec<ContentNode>) {
 
     let trailing = match nodes.last() {
         Some(node) if !node.is_placeholder() => {
-            let trimmed = node.data().trim_end();
+            let trimmed = node.data().trim_end_matches(|c| trim.contains(&c));
             (trimmed.len() != node.data().len()).then(|| trimmed.to_owned())
         }
         _ => None,
@@ -133,40 +129,45 @@ fn trim_outer(nodes: &mut Vec<ContentNode>) {
 mod tests {
     use super::*;
 
-    const NFC_PRESERVE: NormalizationProfile = NormalizationProfile {
-        unicode: UnicodeForm::Nfc,
-        whitespace: WhitespacePolicy::Preserve,
-    };
-    const NFKC_TRIM: NormalizationProfile = NormalizationProfile {
-        unicode: UnicodeForm::Nfkc,
-        whitespace: WhitespacePolicy::TrimOuter,
-    };
+    fn nfc_no_trim() -> NormalizationProfile {
+        NormalizationProfile {
+            unicode: UnicodeForm::Nfc,
+            edge_trim: vec![],
+        }
+    }
+
+    fn nfkc_default_trim() -> NormalizationProfile {
+        NormalizationProfile {
+            unicode: UnicodeForm::Nfkc,
+            edge_trim: vec!['\t', '\n', '\r', ' '],
+        }
+    }
 
     #[test]
     fn nfc_composes_text() {
         // "e" + combining acute → "é".
-        let out = normalize_content(&[ContentNode::text("e\u{0301}")], &NFC_PRESERVE);
+        let out = normalize_content(&[ContentNode::text("e\u{0301}")], &nfc_no_trim());
         assert_eq!(out, [ContentNode::text("\u{00e9}")]);
     }
 
     #[test]
     fn nfkc_folds_compatibility_characters() {
         // The "ﬁ" ligature folds to "fi" under NFKC, not under NFC.
-        let nfkc = normalize_content(&[ContentNode::text("\u{fb01}le")], &NFKC_TRIM);
+        let nfkc = normalize_content(&[ContentNode::text("\u{fb01}le")], &nfkc_default_trim());
         assert_eq!(nfkc, [ContentNode::text("file")]);
-        let nfc = normalize_content(&[ContentNode::text("\u{fb01}le")], &NFC_PRESERVE);
+        let nfc = normalize_content(&[ContentNode::text("\u{fb01}le")], &nfc_no_trim());
         assert_eq!(nfc, [ContentNode::text("\u{fb01}le")]);
     }
 
     #[test]
-    fn trim_outer_trims_segment_edges_only() {
+    fn default_trims_segment_edges_only() {
         let out = normalize_content(
             &[
                 ContentNode::text(" Hello "),
                 ContentNode::placeholder("<b>"),
                 ContentNode::text(" world "),
             ],
-            &NormalizationProfile::DEFAULT,
+            &NormalizationProfile::default(),
         );
         // Leading of the first run and trailing of the last gone; internal kept.
         assert_eq!(
@@ -180,37 +181,61 @@ mod tests {
     }
 
     #[test]
-    fn trim_outer_drops_whitespace_only_edges() {
+    fn default_drops_whitespace_only_edges() {
         let out = normalize_content(
             &[
                 ContentNode::text("   "),
                 ContentNode::placeholder("<x/>"),
                 ContentNode::text("  "),
             ],
-            &NormalizationProfile::DEFAULT,
+            &NormalizationProfile::default(),
         );
         assert_eq!(out, [ContentNode::placeholder("<x/>")]);
     }
 
     #[test]
-    fn trim_outer_whitespace_only_single_run_becomes_empty() {
-        let out = normalize_content(&[ContentNode::text("   ")], &NormalizationProfile::DEFAULT);
+    fn whitespace_only_single_run_becomes_empty() {
+        let out = normalize_content(
+            &[ContentNode::text("   ")],
+            &NormalizationProfile::default(),
+        );
         assert!(out.is_empty());
     }
 
     #[test]
-    fn preserve_keeps_outer_whitespace() {
-        let out = normalize_content(&[ContentNode::text(" Hello ")], &NFC_PRESERVE);
+    fn empty_trim_set_preserves_edges() {
+        let out = normalize_content(&[ContentNode::text(" Hello ")], &nfc_no_trim());
         assert_eq!(out, [ContentNode::text(" Hello ")]);
     }
 
     #[test]
-    fn internal_whitespace_is_never_collapsed() {
+    fn internal_content_is_never_trimmed() {
         let out = normalize_content(
             &[ContentNode::text("Hello   world")],
-            &NormalizationProfile::DEFAULT,
+            &NormalizationProfile::default(),
         );
         assert_eq!(out, [ContentNode::text("Hello   world")]);
+    }
+
+    #[test]
+    fn default_set_does_not_trim_nbsp() {
+        // The default set is exactly {tab, LF, CR, space}: NBSP (U+00A0) is left
+        // alone, so meaningful non-breaking spacing survives at the edges.
+        let out = normalize_content(
+            &[ContentNode::text(" \u{00a0}hi\u{00a0} ")],
+            &NormalizationProfile::default(),
+        );
+        assert_eq!(out, [ContentNode::text("\u{00a0}hi\u{00a0}")]);
+    }
+
+    #[test]
+    fn custom_trim_set_trims_arbitrary_characters() {
+        let profile = NormalizationProfile {
+            unicode: UnicodeForm::Nfc,
+            edge_trim: vec!['!'],
+        };
+        let out = normalize_content(&[ContentNode::text("!!hi!!")], &profile);
+        assert_eq!(out, [ContentNode::text("hi")]);
     }
 
     #[test]

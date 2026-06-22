@@ -67,7 +67,7 @@ proptest! {
     /// Normalizing twice is the same as normalizing once.
     #[test]
     fn normalize_is_idempotent(nodes in arb_nodes()) {
-        let profile = NormalizationProfile::DEFAULT;
+        let profile = NormalizationProfile::default();
         let once = normalize_content(&collapse(&nodes), &profile);
         let twice = normalize_content(&once, &profile);
         prop_assert_eq!(twice, once);
@@ -77,7 +77,7 @@ proptest! {
     /// many text chunks and the single concatenated string hash alike.
     #[test]
     fn atom_id_is_invariant_to_text_chunking(chunks in prop::collection::vec(any::<String>(), 0..8)) {
-        let profile = NormalizationProfile::DEFAULT;
+        let profile = NormalizationProfile::default();
         let chunked = Atom::new(english(), chunks.iter().cloned().map(text));
         let single = Atom::new(english(), [text(chunks.concat())]);
         prop_assert_eq!(atom_id(&chunked, &profile), atom_id(&single, &profile));

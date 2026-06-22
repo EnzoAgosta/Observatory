@@ -137,7 +137,7 @@ pub fn atom_id(atom: &Atom, profile: &NormalizationProfile) -> AtomId {
 mod tests {
     use super::*;
     use crate::ir::LanguageTag;
-    use crate::normalize::{UnicodeForm, WhitespacePolicy};
+    use crate::normalize::UnicodeForm;
 
     /// Builds an `en-us` atom from the given nodes — keeps the tests terse.
     fn en(nodes: impl IntoIterator<Item = ContentNode>) -> Atom {
@@ -146,17 +146,24 @@ mod tests {
 
     /// The default-profile id, for tests that don't probe the profile.
     fn id(atom: &Atom) -> AtomId {
-        atom_id(atom, &NormalizationProfile::DEFAULT)
+        atom_id(atom, &NormalizationProfile::default())
     }
 
-    const PRESERVE: NormalizationProfile = NormalizationProfile {
-        unicode: UnicodeForm::Nfc,
-        whitespace: WhitespacePolicy::Preserve,
-    };
-    const NFKC: NormalizationProfile = NormalizationProfile {
-        unicode: UnicodeForm::Nfkc,
-        whitespace: WhitespacePolicy::TrimOuter,
-    };
+    /// NFC, no edge trimming.
+    fn no_trim() -> NormalizationProfile {
+        NormalizationProfile {
+            unicode: UnicodeForm::Nfc,
+            edge_trim: vec![],
+        }
+    }
+
+    /// NFKC, default edge trimming.
+    fn nfkc() -> NormalizationProfile {
+        NormalizationProfile {
+            unicode: UnicodeForm::Nfkc,
+            edge_trim: vec!['\t', '\n', '\r', ' '],
+        }
+    }
 
     #[test]
     fn merges_adjacent_text_into_one_node() {
@@ -264,7 +271,7 @@ mod tests {
         expected.push(0x01); // placeholder, no data
 
         assert_eq!(
-            canonical_bytes(&atom, &NormalizationProfile::DEFAULT),
+            canonical_bytes(&atom, &NormalizationProfile::default()),
             expected
         );
     }
@@ -351,11 +358,11 @@ mod tests {
     }
 
     #[test]
-    fn whitespace_policy_changes_the_id() {
-        // Under Preserve, outer whitespace is kept and therefore distinguishes.
+    fn empty_trim_set_changes_the_id() {
+        // With no edge trimming, outer whitespace is kept and so distinguishes.
         let spaced = en([ContentNode::text(" hi ")]);
         let tight = en([ContentNode::text("hi")]);
-        assert_ne!(atom_id(&spaced, &PRESERVE), atom_id(&tight, &PRESERVE));
+        assert_ne!(atom_id(&spaced, &no_trim()), atom_id(&tight, &no_trim()));
     }
 
     #[test]
@@ -363,7 +370,7 @@ mod tests {
         // NFKC folds the "ﬁ" ligature into "fi"; NFC does not.
         let ligature = en([ContentNode::text("\u{fb01}le")]);
         let plain = en([ContentNode::text("file")]);
-        assert_eq!(atom_id(&ligature, &NFKC), atom_id(&plain, &NFKC));
+        assert_eq!(atom_id(&ligature, &nfkc()), atom_id(&plain, &nfkc()));
         assert_ne!(id(&ligature), id(&plain)); // default is NFC
     }
 
