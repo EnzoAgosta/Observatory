@@ -175,6 +175,7 @@ name = "observatory-xliff12"
 version = "0.0.1"
 dependencies = [
  "observatory-core",
+ "proptest",
  "quick-xml",
 ]
 

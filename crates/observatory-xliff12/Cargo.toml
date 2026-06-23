@@ -10,3 +10,6 @@ readme = "README.md"
 [dependencies]
 observatory-core = { path = "../observatory-core", version = "0.1.0" }
 quick-xml = "0.40.1"
+
+[dev-dependencies]
+proptest = "1.11.0"
