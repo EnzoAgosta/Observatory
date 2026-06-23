@@ -5,7 +5,7 @@
 //! text is carried as logical Unicode or as raw, escaped bytes — and it must be
 //! the *same* on both sides of a round-trip: the mode is not recorded on the
 //! atom, so passing one codec object to both calls is what keeps parse and emit
-//! symmetric (D26).
+//! symmetric.
 
 /// How XML entities in *text* are treated. Placeholder markup is always raw and
 /// is unaffected by this choice.

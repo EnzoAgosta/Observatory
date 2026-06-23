@@ -1,4 +1,4 @@
-//! The round-trip fidelity gate (D9): parsing an XLIFF 1.2 content fragment and
+//! The round-trip fidelity gate: parsing an XLIFF 1.2 content fragment and
 //! emitting it back must be faithful.
 //!
 //! - **Verbatim** is byte-identical for any fragment.
@@ -102,8 +102,8 @@ fn id(fragment: &str, codec: Codec) -> observatory_core::identity::AtomId {
 
 #[test]
 fn equivalent_escapings_share_atom_id_under_logical() {
-    // The §10 reproducibility bet at the boundary: how a character was escaped
-    // upstream must not fragment identity.
+    // Reproducibility at the boundary: how a character was escaped upstream must
+    // not fragment identity.
     let amp = id("Tom &amp; Jerry", Codec::logical());
     let dec = id("Tom &#38; Jerry", Codec::logical());
     let hex = id("Tom &#x26; Jerry", Codec::logical());
@@ -122,8 +122,8 @@ fn placeholder_markup_does_not_affect_atom_id() {
 #[test]
 fn different_tag_kinds_with_matching_structure_share_atom_id() {
     // A paired <g> and a pair of empty placeholders both yield one placeholder
-    // before and after "here" — identical position and count, so identical id
-    // (D16: identity is by position and count, never by kind).
+    // before and after "here" — identical position and count, so identical id:
+    // identity is by placeholder position and count, never by tag kind.
     let paired = id(r#"Click <g id="1">here</g>"#, Codec::logical());
     let empties = id(r#"Click <bx id="1"/>here<ex id="1"/>"#, Codec::logical());
     assert_eq!(paired, empties);

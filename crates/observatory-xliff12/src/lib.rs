@@ -1,7 +1,7 @@
 //! XLIFF 1.2 adapter for [`observatory_core`]: a stateless codec between an XLIFF
 //! 1.2 content fragment and an [`Atom`](observatory_core::ir::Atom).
 //!
-//! This crate is the boundary primitive (D26). It does exactly two things:
+//! This crate is the boundary primitive. It does exactly two things:
 //!
 //! - [`parse`] turns the XML of an assumed-valid, already-extracted content node
 //!   (the body of a `<source>` / `<target>`) into an `Atom`.

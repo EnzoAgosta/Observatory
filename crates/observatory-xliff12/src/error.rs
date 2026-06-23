@@ -4,10 +4,9 @@ use std::fmt;
 
 /// An error from parsing an XLIFF 1.2 content fragment into an [`Atom`].
 ///
-/// The adapter assumes it is handed already-extracted, well-formed XLIFF content
-/// (D26); these variants report the ways that assumption can break. The
-/// underlying XML library never appears in this type — it stays swappable behind
-/// the boundary.
+/// The adapter assumes it is handed already-extracted, well-formed XLIFF content;
+/// these variants report the ways that assumption can break. The underlying XML
+/// library never appears in this type — it stays swappable behind the boundary.
 ///
 /// [`Atom`]: observatory_core::ir::Atom
 #[derive(Debug, Clone, PartialEq, Eq)]

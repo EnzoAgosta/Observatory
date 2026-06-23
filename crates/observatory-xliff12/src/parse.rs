@@ -5,9 +5,9 @@
 //! level up, on `<file>`), which also gates the caller's own validity.
 //!
 //! The tokenizer is a single forward pass over the XML events; the structure of
-//! placeholder pairing is never reconstructed, because identity cares only about
-//! placeholder *position and count* (D16). Each element is classified solely by
-//! what XLIFF 1.2 says its content is:
+//! placeholder pairing is never reconstructed, because an atom's identity cares
+//! only about placeholder *position and count*, not which open pairs with which
+//! close. Each element is classified solely by what XLIFF 1.2 says its content is:
 //!
 //! - **native code** (`<bpt>`, `<ept>`, `<ph>`, `<it>`): the whole element,
 //!   including any nested `<sub>`, is read to its end and recorded as one opaque
@@ -352,7 +352,7 @@ mod tests {
     #[test]
     fn sub_inside_code_stays_opaque() {
         // <sub> carries translatable text, but it is inside native code, so the
-        // whole <ph> (sub and all) is one opaque placeholder (D8 / D26).
+        // whole <ph> (sub and all) is one opaque placeholder.
         let atom = parse_logical(r#"<ph id="1">img(<sub>alt text</sub>)</ph>"#).unwrap();
         assert_nodes(
             &atom,
@@ -459,9 +459,8 @@ mod tests {
 
     #[test]
     fn unclosed_container_is_recorded_faithfully() {
-        // We do not validate structural balance (D26 — no validation). An
-        // unclosed <g> is recorded as exactly what it is and round-trips; whether
-        // that is "valid" is a layer-above concern.
+        // We do not validate structural balance — that is a layer-above concern.
+        // An unclosed <g> is recorded as exactly what it is and round-trips.
         let atom = parse_logical(r#"<g id="1">oops"#).unwrap();
         assert_nodes(&atom, &[(true, r#"<g id="1">"#), (false, "oops")]);
     }
