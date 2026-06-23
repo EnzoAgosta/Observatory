@@ -744,6 +744,76 @@ permanent ambiguity in every doc, issue, and `Cargo.toml` that references it;
 
 ---
 
+### D26 — The XLIFF 1.2 adapter is a stateless content-node codec: spec-driven tokenization, logical/verbatim entities
+**Status:** Accepted &nbsp;|&nbsp; **Refines D3, D16; relates to D8, Q2, Q5**
+
+**Context.** D24/D25 created `observatory-xliff12` as the boundary crate. Its scope
+is now fixed far narrower than the phase plan implied: a *pure, stateless gate*
+between one XLIFF 1.2 content fragment and an `Atom` — two functions, no document
+model, no validation, no `<file>` / `<trans-unit>` traversal, no source↔target
+pairing, no language resolution. Deciding *which* node becomes an atom, validating
+the document, and recording relationships (`TRANSLATION_OF`, sub-of) are consumer
+concerns (D1). This crate is a primitive, not an app.
+
+**Decision.**
+
+*Surface.* `parse(content, language, codec) -> Result<Atom, _>` tokenizes the XML
+string of an assumed-valid, already-extracted content node into an `Atom`; the
+caller supplies the `LanguageTag` (it lives a level up on `<file>`, and requiring
+it gates the caller's own validity). `emit(atom, codec) -> String` is the inverse.
+No other configuration.
+
+*Tokenization is purely spec-content-model-driven.* The only per-element decision
+is what XLIFF 1.2 declares the content model to be:
+- **Content is native code** (`<bpt>`, `<ept>`, `<ph>`, `<it>`): read to the
+  element's end; record the *entire* span — tag, code, any `<sub>`, close — as
+  **one opaque placeholder**. We never look inside, so `<sub>` presence is
+  irrelevant (D8 — extraction is a layer above).
+- **Content is translatable text** (`<g>`, `<mrk>`): record the element's
+  *presence* (open tag with all attributes as a placeholder, close tag as a
+  placeholder) and **keep tokenizing the inner content as text and nested inlines**
+  (recursion, same rule). Text stays in the atom; markup becomes position+count
+  placeholders (D16).
+- **Empty elements** (`<x/>`, `<bx/>`, `<ex/>`): the same "not code" branch,
+  degenerate — a single presence placeholder, no inner text.
+
+The whole rule: *spec says code → hide it; spec says text → keep the text, mark the
+tag.* No interpretation of ids, rids, pairing, or sub-flows.
+
+*Placeholders are raw byte-slices of the original input, never re-serialized* —
+this keeps attribute order, quoting, and `<x/>`-vs-`<x></x>` faithful.
+
+*Entity codec — logical (default) or verbatim,* passed symmetrically to `parse`
+and `emit`:
+- **Logical (default):** text runs are XML-unescaped to Unicode on parse and
+  re-escaped on emit with partial escaping (`<`, `>`, `&`; quotes untouched).
+  Round-trip is **content-identical**; identity is correct — fragments differing
+  only in escaping share an `AtomId` (the §10 bet). Placeholder bytes are never
+  decoded.
+- **Verbatim:** text runs kept as raw bytes; emit concatenates. Round-trip is
+  **byte-identical**, but identity hashes the escaped form — a deliberate, named
+  caller choice (D6).
+- The mode is not stored on the atom, so `parse` and `emit` must use the *same*
+  codec; the codec object makes that symmetry natural.
+
+*Failure is loud.* Unknown/custom (DTD) entities under logical mode — outside the
+standard XML set — are a parse error, never silently passed through.
+
+**Deferred (unchanged).** `<mrk>` semantics (Q2): for now tokenized exactly like
+`<g>` (presence marked, text kept), which loses nothing and round-trips; whether
+its boundary should become *transparent* in identity, or a caller policy, stays
+open. `<sub>` extraction (D8), language-only tags (Q5), and all document-level
+concerns remain the consumer's.
+
+**Why.** The boundary crate's one job is faithful translation between XLIFF
+content and atoms; every choice beyond "is this content code or text per spec" is
+interpretation that belongs above the primitive (D1, D6). A spec-driven tokenizer
+with raw-slice placeholders is the dumbest thing that is also *correct* for
+identity and round-trip, and it gets smarter only when a real file proves it must
+— never on spec.
+
+---
+
 ### Q5 — Language-only tags at the XLIFF boundary
 D7 makes region mandatory, but XLIFF 1.2 commonly uses language-only tags
 (`source-language="en"`). Decide how the XLIFF adapter (Phase 2) handles a
