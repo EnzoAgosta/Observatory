@@ -33,3 +33,9 @@ pub use codec::{Codec, EntityMode};
 pub use emit::emit;
 pub use error::ParseError;
 pub use parse::parse;
+
+/// Compiles the code example in the crate README as a doc-test, so it can't drift
+/// from the real API. Exists only during doc-test collection.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+pub struct ReadmeDocTests;
