@@ -823,6 +823,95 @@ consequence isn't lost.
 
 ---
 
+### D27 — `ContentNode` is an enum again; access by exhaustive match
+**Status:** Accepted &nbsp;|&nbsp; **Supersedes D17's model clause (`is_placeholder: bool`); restores D16's `ContentKind` enum shape**
+
+**Context.** D16 modeled a content node as a two-variant enum; D17, chasing a dumb
+constructor, flattened it to `ContentNode { is_placeholder: bool, data: String }`
+with `is_placeholder()` / `data()` accessors. In practice the bool-plus-payload
+shape is the exact thing enums exist to replace: every consumer that cares about
+the kind has to remember to pair `is_placeholder()` with `data()`, and the
+compiler can't enforce exhaustive handling.
+
+**Decision.**
+- `ContentNode` is `enum { Text(String), Placeholder(String) }`.
+- Constructors `text()` / `placeholder()` stay (`impl Into<String>`).
+- Access is by `match`. A single `as_str()` returns the inner string for either
+  variant — the only shared accessor, used by `reconstruct()` and any
+  kind-agnostic join.
+- The `is_placeholder()` and `data()` accessors of D17 are **removed**. Code that
+  branches on kind matches the enum; code that only wants the bytes calls
+  `as_str()`.
+
+**Why.** The kind is a closed binary carrying a payload — the canonical case for
+an enum. Matching is exhaustive and self-documenting. D17's concern was
+construction-time mutation, not the field shape; faithful construction (D17) is
+untouched — the enum just names the two states directly.
+
+**Consequence (ripple).** `collapse` / serialize (identity), `normalize_content`
+/ trim (normalize), and the XLIFF `emit` branch on `is_placeholder()` + `data()`
+today; each moves to a `match` (or `as_str()` where kind is irrelevant). The
+`==`-vs-`AtomId` distinction (D17) is unchanged.
+
+---
+
+### D28 — `LanguageTag` deliberately exposes `oxilangtag`; construction is explicit, not `.parse`
+**Status:** Accepted &nbsp;|&nbsp; **Supersedes D19's "oxilangtag stays internal / swappable" clause and the `parse` constructor name**
+
+**Context.** D19 wrapped `oxilangtag` entirely: one constructor
+`LanguageTag::parse`, a private inner field, and a `LanguageTagError` that
+re-expressed the failure in our own terms so the dependency "never appears in the
+public API (swappable, §10)." Two things pushed against that wall: the wrapped
+error threw away the parser's own diagnostic, and a caller who *already* holds a
+parsed `oxilangtag` tag had no way to reuse it.
+
+**Decision.**
+- **Two constructors, both explicit:**
+  - `from_string(impl Into<String>) -> Result<Self, LanguageTagError>` — parse a
+    raw string, then enforce the region rule (D19).
+  - `from_parsed(OxiLanguageTag<String>) -> Result<Self, LanguageTagError>` —
+    accept an already-parsed tag and only check the region; skips re-parsing.
+- **`as_parsed() -> &OxiLanguageTag<String>`** exposes the validated inner tag,
+  giving callers oxilangtag's subtag accessors (`region()`, `script()`, …)
+  without us re-surfacing each one.
+- **`LanguageTagError::Malformed` carries the underlying
+  `oxilangtag::LanguageTagParseError`.** `oxilangtag` is now part of
+  observatory-core's public API.
+- **Constructor name is `from_string`, deliberately not `parse` / `FromStr`.**
+  Building an `Atom` is the core act of the whole crate; callers should name *how*
+  they mint a language tag (`from_string` vs `from_parsed`) rather than lean on an
+  implicit `.parse()`.
+
+**Why.**
+- *Debuggability.* The original parse error is the single most useful artifact
+  when a tag is rejected; discarding it (D19) traded real diagnostic value for
+  purity.
+- *Reuse / power users.* Most consumers reach core *through* the XLIFF adapter,
+  which itself benefits from oxilangtag access (e.g. Q5 region resolution). A
+  caller already on oxilangtag can hand us a parsed tag via `from_parsed` (faster
+  — region check only) or reach the original `OxiLanguageTag` via `as_parsed`
+  when they need full subtag detail.
+- *Explicitness.* Naming the constructor after its input keeps tag creation — and
+  therefore `Atom` creation — legible at the call site.
+
+**Consequence (accepted consciously).**
+- **§10 swappability of the language parser is given up.** Replacing `oxilangtag`
+  is now a breaking change to the public API. Judged worth it: the adapter and
+  core both want oxilangtag, so the abstraction was guarding a swap that isn't
+  going to happen.
+- **`LanguageTagError` loses `Clone, PartialEq, Eq`** — `LanguageTagParseError`
+  is `Debug`-only, so the embedded error caps what the enum can derive. Error
+  values can be inspected (`Debug`, `Display`, `matches!`) but not compared or
+  cloned.
+- All current call sites use `LanguageTag::parse`; each renames to `from_string`.
+
+**Note.** The region rule, faithful (case-preserving) storage,
+well-formedness-not-registry validity, and hyphen-only separators of D19 are all
+unchanged — this decision revises only the constructor surface and error type,
+not the validation policy.
+
+---
+
 ## Phase Plan (accepted)
 
 Deliberately fine-grained; we reason through each before starting it.
