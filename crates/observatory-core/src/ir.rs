@@ -284,4 +284,24 @@ mod tests {
         );
         assert_eq!(atom.reconstruct(), "hi<x/>bye");
     }
+
+    #[test]
+    fn language_tag_as_parsed_exposes_the_oxilangtag_value() {
+        let tag = LanguageTag::from_string("en-US").unwrap();
+        assert_eq!(tag.as_parsed().region(), Some("US"));
+    }
+
+    #[test]
+    fn malformed_error_displays_the_tag_and_its_cause() {
+        let error = LanguageTag::from_string("not a tag").unwrap_err();
+        assert!(matches!(error, LanguageTagError::Malformed { .. }));
+        assert!(error.to_string().contains("not a tag"));
+    }
+
+    #[test]
+    fn missing_region_error_displays_the_tag() {
+        let error = LanguageTag::from_string("en").unwrap_err();
+        assert!(matches!(error, LanguageTagError::MissingRegion { .. }));
+        assert!(error.to_string().contains("region"));
+    }
 }

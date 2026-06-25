@@ -440,4 +440,78 @@ mod tests {
         let out = normalize_language_tag(&tag, &LanguageNormalizationProfile::Uppercase).unwrap();
         assert_eq!(out.as_str(), "EN-US");
     }
+
+    #[test]
+    fn trim_all_leading_trims_the_start_of_every_text_run() {
+        let out = trim_nodes(
+            &[
+                ContentNode::text("  a"),
+                ContentNode::placeholder("<x/>"),
+                ContentNode::text("  b"),
+            ],
+            TrimMode::TrimAllLeading,
+            &[' '],
+        );
+        assert_eq!(
+            out,
+            [
+                ContentNode::text("a"),
+                ContentNode::placeholder("<x/>"),
+                ContentNode::text("b"),
+            ]
+        );
+    }
+
+    #[test]
+    fn trim_all_trailing_trims_the_end_of_every_text_run() {
+        let out = trim_nodes(
+            &[
+                ContentNode::text("a  "),
+                ContentNode::placeholder("<x/>"),
+                ContentNode::text("b  "),
+            ],
+            TrimMode::TrimAllTrailing,
+            &[' '],
+        );
+        assert_eq!(
+            out,
+            [
+                ContentNode::text("a"),
+                ContentNode::placeholder("<x/>"),
+                ContentNode::text("b"),
+            ]
+        );
+    }
+
+    #[test]
+    fn trimming_empty_input_is_a_no_op_for_every_outer_mode() {
+        for mode in [
+            TrimMode::TrimOuterLeading,
+            TrimMode::TrimOuterTrailing,
+            TrimMode::TrimOuterBoth,
+        ] {
+            assert!(trim_nodes(&[], mode, &[' ']).is_empty());
+        }
+    }
+
+    #[test]
+    fn nfkd_decomposes_compatibility_characters() {
+        // The "ﬁ" ligature decomposes to the two characters "fi" under NFKD.
+        let out = normalize_unicode(
+            &[ContentNode::text("\u{fb01}")],
+            &UnicodeNormalizationProfile::Nfkd,
+        );
+        assert_eq!(out, [ContentNode::text("fi")]);
+    }
+
+    #[test]
+    fn cjk_compat_variants_maps_compatibility_ideographs() {
+        // U+FA10 (a CJK compatibility ideograph) maps to its canonical form
+        // U+585A followed by the standardized variation selector U+FE00.
+        let out = normalize_unicode(
+            &[ContentNode::text("\u{fa10}")],
+            &UnicodeNormalizationProfile::CjkCompatVariants,
+        );
+        assert_eq!(out, [ContentNode::text("\u{585a}\u{fe00}")]);
+    }
 }
