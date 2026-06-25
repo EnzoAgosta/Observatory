@@ -531,6 +531,55 @@ _Failure is loud._ Unknown/custom (DTD) entities under logical mode — outside 
 
 ---
 
+### D30 — XLIFF parse: a quick-xml pull-tokenizer returning `Vec<ContentNode>`
+
+**Status:** Accepted &nbsp;|&nbsp; **Enacts D26**
+
+**Decision.**
+
+- `parse_segment(content: &str, mode) -> Result<Vec<ContentNode>, XliffParseError>`. Input is the inline _body_ of a `<source>`/`<target>` (the caller strips the wrapper); output is the raw content tokens. It does **not** build an `Atom`, resolve the language, normalize, or compute identity — the caller composes that pipeline (`Atom::new(lang, nodes)` → `normalize` → `id_from_atom`).
+- Implemented with quick-xml's **borrowing pull reader** (`Reader::from_str`) over a small stateful parser. Placeholders are **raw byte-slices of the input**, captured by tracking the reader's byte position — attribute order, quoting, and `<x/>`-vs-`<x></x>` preserved.
+- Classification is purely the XLIFF 1.2 content model, by element name: **code-content** `{bpt,ept,ph,it}` → one opaque placeholder (read to element end via `read_to_end`); **text-content** `{g,mrk}` → open/close tags as placeholders, inner text kept; **empty** `{x,bx,ex}` and any self-closed inline → one placeholder. Nesting needs no manual stack: code-content is consumed atomically, so only text-content opens/closes surface as events.
+- `XliffParseError` wraps `quick_xml::Error` and decoding uses quick-xml's `unescape`, so quick-xml appears in the adapter's error surface — the same debuggability precedent as D28.
+
+**Why.** The boundary's one job is faithful XLIFF↔node translation; everything beyond "code or text per spec" is interpretation/policy that belongs above the primitive (D1, D26). Returning a bare `Vec<ContentNode>` keeps the seam dumb and leaves Atom assembly, normalization, and identity to the caller (D29).
+
+---
+
+### D31 — Entities: one accumulate strategy, the mode is a single decode-or-not switch
+
+**Status:** Accepted &nbsp;|&nbsp; **Enacts D26's codec**
+
+**Context.** quick-xml 0.40 emits entity references (`&amp;`, `&#10;`) as their own `GeneralRef` events, separate from text — there is no `unescape()` on a `Text` event to lean on.
+
+**Decision.**
+
+- `EntityMode { Logical (default), Verbatim }`, passed to `parse` and symmetrically to `emit`.
+- **A single text-building path for both modes:** text runs, entity refs, and CDATA accumulate into a pending `String`, flushed as one `ContentNode::Text` at each element boundary. The mode changes exactly one thing — how a `GeneralRef` is appended: **Logical** decodes it (standard XML entities + numeric char refs, via quick-xml's `unescape`); **Verbatim** keeps its raw bytes.
+- An unknown/non-standard entity under Logical is a hard error (`UnknownEntity`); under Verbatim it's kept raw.
+- **Entities inside placeholders are never decoded** — code-content is swallowed whole, so its bytes stay raw.
+
+**Why.** One accumulate path (rather than a slice-for-verbatim / accumulate-for-logical fork) makes the mode a one-line difference and far easier to reason about; the small extra allocation is irrelevant at segment size. Decoding stays at the boundary, never in identity (D29). Bonus: accumulation merges adjacent text/entity/CDATA runs into a single node.
+
+---
+
+### D32 — CDATA is character data, handled as text following the mode; other non-inline constructs fail loud
+
+**Status:** Accepted &nbsp;|&nbsp; **Enacts D26 (loud failure); refines D31**
+
+**Context.** A segment body can contain XML constructs beyond text and inline elements. CDATA is the subtle one: XML mixed content (`#PCDATA`) permits a CDATA section _anywhere character data is allowed_, so `<source>a <![CDATA[b]]> c</source>` is well-formed — a CDATA section is just an alternative serialization of character data, not a distinct kind of content.
+
+**Decision.**
+
+- **CDATA is treated as text, following the entity mode** (D31), stored as a `Text` node — not a placeholder, not a new node kind. **Verbatim** keeps the raw `<![CDATA[…]]>` bytes (byte-identical round-trip); **Logical** strips the delimiters and keeps the inner content (its bytes are already literal — CDATA suppresses entity recognition, so logical does _not_ unescape inside it).
+- Everything else outside the inline content model is a **hard parse error, never silently dropped**: unknown elements (`UnknownTag`), and comments, processing instructions, XML declarations, doctypes (`UnsupportedConstruct`).
+
+**Why.** The dumb adapter follows the XML spec, where CDATA _is_ character data (text); ascribing it an "opaque, do-not-touch" meaning would be interpretation (D26) and would force a bad model — a placeholder excludes its content from identity (D16), so two different CDATA texts would collide, and a new `ContentNode` variant would leak an escaping concept into the format-free core (D1). Silent dropping of the other constructs is the data loss the fail-loud tenet rejects.
+
+**Consequence (accepted).** Under Logical, a CDATA section is re-serialized to escaped text on emit (`<![CDATA[a&b]]>` → `a&amp;b`) — content-identical, _not_ byte-identical. That is logical mode working as designed (it sees through serialization). A caller needing CDATA to survive byte-intact uses **Verbatim** for that file/segment; the niche "Logical text but byte-faithful CDATA in one segment" is deferred to caller composition (pre-extract the region) and revisited only if a real file demands it — never built on spec. A future strict "error on CDATA" knob remains available if wanted.
+
+---
+
 ## Phase Plan (accepted)
 
 Deliberately fine-grained; we reason through each before starting it.
