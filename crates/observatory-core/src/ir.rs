@@ -6,10 +6,13 @@
 //!
 //! Construction is *faithful*: an `Atom` records exactly the nodes it is given —
 //! no merging, dropping, or reordering — and the original string is recovered by
-//! joining every node's data in order ([`Atom::reconstruct`]). Identity is a
-//! separate, derived projection (the `AtomId`; see [`crate::identity`]): two atoms
-//! can be structurally different (`!=`) yet share an identity, so dedup and
-//! comparison go through the `AtomId`, never `==`.
+//! joining every node's data in order ([`Atom::reconstruct`]).
+//!
+//! Identity (the `AtomId`; see [`crate::identity`]) is computed from an atom
+//! exactly as recorded: it applies no normalization and treats text, chunking,
+//! and language case as significant — only placeholder *markup* is excluded.
+//! Canonicalizing "the same" content across taggings is a separate, explicit
+//! step the caller applies with [`crate::normalize`] before taking the id.
 
 use std::fmt;
 
@@ -19,10 +22,12 @@ use oxilangtag::{LanguageTag as OxiLanguageTag, LanguageTagParseError};
 ///
 /// The order of [`content`](Atom::content) is significant. Construction is
 /// faithful — an `Atom` preserves exactly the nodes it was built from, including
-/// adjacent and empty text runs — so `==` means "structurally identical," not
-/// "same identity." Identity is the `AtomId` (see [`crate::identity`]); two atoms
-/// that differ only in how their text was split into runs share an `AtomId`
-/// without being `==`.
+/// adjacent and empty text runs. Identity is the `AtomId` (see
+/// [`crate::identity`]), derived from the atom as recorded: it excludes only
+/// placeholder *markup*, so two atoms that share an `AtomId` without being `==`
+/// differ purely in how their placeholders are written (`<b>` vs `{0}`).
+/// Differences in text, chunking, or language case change the `AtomId` — fold
+/// them first with [`crate::normalize`] if you want them to compare equal.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Atom {
     language: LanguageTag,
@@ -98,11 +103,13 @@ impl ContentNode {
 /// other subtags are optional. Validity is structural (grammar) only — there is
 /// no registry lookup, so private-use tags such as `qaa-QM` are accepted.
 ///
-/// The original case is preserved; identity treats tags case-insensitively (see
-/// [`crate::identity`]), so `from_string("en-US")` and `from_string("en-us")` are
-/// structurally distinct but share an `AtomId`. The validated `oxilangtag` value
-/// is reachable through [`as_parsed`](LanguageTag::as_parsed) for callers that
-/// need its subtag accessors.
+/// The original case is preserved and used verbatim by identity, so
+/// `from_string("en-US")` and `from_string("en-us")` yield *different* `AtomId`s;
+/// fold case first with
+/// [`normalize_language_tag`](crate::normalize::normalize_language_tag) if you
+/// want them to match. The validated `oxilangtag` value is reachable through
+/// [`as_parsed`](LanguageTag::as_parsed) for callers that need its subtag
+/// accessors.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LanguageTag(OxiLanguageTag<String>);
 
