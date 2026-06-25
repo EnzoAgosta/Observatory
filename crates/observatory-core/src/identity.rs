@@ -38,7 +38,8 @@ fn content_as_bytes(content: &[ContentNode]) -> Vec<u8> {
 }
 
 fn add_bytes_with_be_length(buf: &mut Vec<u8>, bytes: &[u8]) {
-    buf.extend(bytes.len().to_be_bytes());
+    let len = u32::try_from(bytes.len()).expect("field exceeds u32::MAX bytes");
+    buf.extend(len.to_be_bytes());
     buf.extend(bytes);
 }
 

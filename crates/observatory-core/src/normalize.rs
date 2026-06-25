@@ -30,14 +30,12 @@ fn collapse_adjacent(content: &[ContentNode]) -> Vec<ContentNode> {
     for node in content {
         match node {
             ContentNode::Placeholder(_) => {
-                if pending_text.is_empty() {
-                    collapsed.push(node.clone());
-                } else {
-                    collapsed.push(ContentNode::text(pending_text.clone()));
-                    pending_text.clear();
+                if !pending_text.is_empty() {
+                    collapsed.push(ContentNode::text(std::mem::take(&mut pending_text)));
                 }
+                collapsed.push(node.clone());
             }
-            ContentNode::Text(_) => pending_text.push_str(node.as_str()),
+            ContentNode::Text(data) => pending_text.push_str(data),
         }
     }
     if !pending_text.is_empty() {
@@ -81,61 +79,53 @@ fn trim_both(node: &ContentNode, trim: &[char]) -> ContentNode {
     }
 }
 
-pub fn trim_nodes(nodes: &mut Vec<ContentNode>, mode: TrimMode, trim: &[char]) -> Vec<ContentNode> {
+pub fn trim_nodes(nodes: &[ContentNode], mode: TrimMode, trim: &[char]) -> Vec<ContentNode> {
     let mut nodes = nodes.to_owned();
     match mode {
         TrimMode::TrimAllLeading => nodes.iter().map(|node| trim_leading(node, trim)).collect(),
         TrimMode::TrimAllTrailing => nodes.iter().map(|node| trim_trailing(node, trim)).collect(),
         TrimMode::TrimAllBoth => nodes.iter().map(|node| trim_both(node, trim)).collect(),
         TrimMode::TrimOuterLeading => {
-            match nodes.first() {
-                Some(node) => nodes[0] = trim_leading(node, trim),
-                _ => {}
+            if let Some(first) = nodes.first() {
+                nodes[0] = trim_leading(first, trim);
             }
-            nodes.to_vec()
+            nodes
         }
         TrimMode::TrimOuterTrailing => {
-            match nodes.last() {
-                Some(node) => {
-                    nodes.to_owned().pop();
-                    nodes.push(trim_trailing(node, trim))
-                }
-                _ => {}
+            if let Some(last) = nodes.last() {
+                let end = nodes.len() - 1;
+                nodes[end] = trim_trailing(last, trim);
             }
-            nodes.to_vec()
+            nodes
         }
         TrimMode::TrimOuterBoth => {
-            match nodes.first() {
-                Some(node) => nodes[0] = trim_leading(node, trim),
-                _ => {}
+            if let Some(first) = nodes.first() {
+                nodes[0] = trim_leading(first, trim);
             }
-            match nodes.last() {
-                Some(node) => {
-                    nodes.to_owned().pop();
-                    nodes.push(trim_trailing(node, trim))
-                }
-                _ => {}
+            if let Some(last) = nodes.last() {
+                let end = nodes.len() - 1;
+                nodes[end] = trim_trailing(last, trim);
             }
-            nodes.to_vec()
+            nodes
         }
     }
 }
 
 pub enum UnicodeNormalizationProfile {
-    NFC,
-    NFKC,
-    NFD,
-    NFKD,
-    CJKCOMPATVARIANTS,
+    Nfc,
+    Nfkc,
+    Nfd,
+    Nfkd,
+    CjkCompatVariants,
 }
 
 fn normalize_text(text: &str, profile: &UnicodeNormalizationProfile) -> String {
     match profile {
-        UnicodeNormalizationProfile::NFC => text.nfc().collect(),
-        UnicodeNormalizationProfile::NFKC => text.nfkc().collect(),
-        UnicodeNormalizationProfile::NFD => text.nfd().collect(),
-        UnicodeNormalizationProfile::NFKD => text.nfkd().collect(),
-        UnicodeNormalizationProfile::CJKCOMPATVARIANTS => text.cjk_compat_variants().collect(),
+        UnicodeNormalizationProfile::Nfc => text.nfc().collect(),
+        UnicodeNormalizationProfile::Nfkc => text.nfkc().collect(),
+        UnicodeNormalizationProfile::Nfd => text.nfd().collect(),
+        UnicodeNormalizationProfile::Nfkd => text.nfkd().collect(),
+        UnicodeNormalizationProfile::CjkCompatVariants => text.cjk_compat_variants().collect(),
     }
 }
 
@@ -153,8 +143,8 @@ pub fn normalize_unicode(
 }
 
 pub enum LanguageNormalizationProfile {
-    LOWERCASE,
-    UPPPERCASE,
+    Lowercase,
+    Uppercase,
 }
 
 pub fn normalize_language_tag(
@@ -162,10 +152,10 @@ pub fn normalize_language_tag(
     profile: &LanguageNormalizationProfile,
 ) -> Result<LanguageTag, LanguageTagError> {
     match profile {
-        LanguageNormalizationProfile::LOWERCASE => {
+        LanguageNormalizationProfile::Lowercase => {
             LanguageTag::from_string(tag.as_str().to_ascii_lowercase())
         }
-        LanguageNormalizationProfile::UPPPERCASE => {
+        LanguageNormalizationProfile::Uppercase => {
             LanguageTag::from_string(tag.as_str().to_ascii_uppercase())
         }
     }
