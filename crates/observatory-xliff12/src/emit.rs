@@ -6,7 +6,7 @@
 use observatory_core::ir::ContentNode;
 use quick_xml::escape::partial_escape;
 
-use crate::parse::EntityMode;
+use crate::EntityMode;
 
 /// Serializes content nodes into an XLIFF 1.2 inline fragment — the inverse of
 /// [`parse_segment`](crate::parse::parse_segment) under the same `mode`.

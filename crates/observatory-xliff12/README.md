@@ -1,20 +1,20 @@
 # observatory-xliff12
 
 The XLIFF 1.2 adapter for [`observatory-core`]: a stateless codec between an
-XLIFF 1.2 content fragment and an `Atom`.
+XLIFF 1.2 content fragment and the `ContentNode`s an `Atom` is made of.
 
 It does exactly two things:
 
-- **`parse`** turns the XML of a content fragment — the inline body of a
-  `<source>` or `<target>` — into an `Atom`.
-- **`emit`** turns an `Atom` back into that XML.
+- **`parse_segment`** turns the XML of a content fragment — the inline body of a
+  `<source>` or `<target>` — into a `Vec<ContentNode>`.
+- **`emit_segment`** turns those nodes back into that XML.
 
 That is the whole crate. It builds no document model, validates no document,
 walks no `<file>` / `<trans-unit>` structure, and records no relationships
-between strings. Deciding *which* fragment becomes an atom, and how atoms relate,
-is the caller's job — this crate is the boundary primitive those higher layers
-rest on. The caller also supplies the language (it lives a level up, on the
-`<file>` element), which doubles as a check that their input is what they think.
+between strings. Assembling the `Atom` (with the language the caller tracks — it
+lives a level up, on the `<file>` element), deciding *which* fragment becomes an
+atom, normalizing it, and how atoms relate are all the caller's job; this crate
+is the boundary primitive those higher layers rest on.
 
 ## Scope
 
@@ -48,7 +48,7 @@ by their position and count, never by their markup.
 
 ## Entity handling
 
-How XML entities in text are treated is the codec's one choice, and it must be the
+How XML entities in text are treated is the `EntityMode`, and it must be the
 same on both sides of a round-trip:
 
 - **Logical** (the default): text is unescaped to its Unicode form on parse and
@@ -60,22 +60,27 @@ same on both sides of a round-trip:
   *byte-identical*, at the cost of identity then depending on the original
   escaping.
 
-Either way, placeholder markup is always carried verbatim.
+CDATA sections are character data and follow the same mode — kept raw under
+verbatim, their delimiters stripped under logical. Either way, placeholder markup
+is always carried verbatim.
 
 ## Example
 
 ```rust
-use observatory_core::ir::LanguageTag;
-use observatory_xliff12::{Codec, emit, parse};
-
-let language = LanguageTag::parse("en-US").unwrap();
+use observatory_xliff12::{EntityMode, emit::emit_segment, parse::parse_segment};
 
 // Parse the inline body of a <source>/<target>. <g> wraps translatable text,
 // so "here" is kept while the tags become opaque placeholders.
-let atom = parse(r#"Click <g id="1">here</g>"#, language, Codec::logical()).unwrap();
+let nodes = parse_segment(r#"Click <g id="1">here</g>"#, EntityMode::Logical).unwrap();
 
-// Emitting reproduces the original content.
-assert_eq!(emit(&atom, Codec::logical()), r#"Click <g id="1">here</g>"#);
+// Emitting under the same mode reproduces the original content.
+assert_eq!(
+    emit_segment(&nodes, EntityMode::Logical),
+    r#"Click <g id="1">here</g>"#,
+);
+
+// The caller then assembles the Atom with the language they track —
+// Atom::new(language, nodes) — normalizes it, and takes its id.
 ```
 
 ## Relationship to observatory-core
@@ -91,7 +96,7 @@ These are deliberately left to the caller or to later work, not silently done:
 
 - **Language-only tags.** XLIFF 1.2 often carries a language with no region
   (`source-language="en"`), but a `LanguageTag` requires one. Resolving a missing
-  region is the caller's call before handing content to `parse`.
+  region is the caller's call before handing content to `parse_segment`.
 - **`<sub>` extraction.** Translatable text nested inside native code is preserved
   opaquely; pulling it out into its own atom is a higher-layer decision.
 - **`<mrk>` semantics.** Annotation markers are currently recorded like `<g>`

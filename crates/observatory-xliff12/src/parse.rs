@@ -3,12 +3,13 @@
 //! [`parse_segment`] is a stateless tokenizer over the inline body of a
 //! `<source>`/`<target>`; see its docs for the content model and entity handling.
 
-use std::fmt;
-
 use observatory_core::ir::ContentNode;
 use quick_xml::Reader;
 use quick_xml::escape::unescape;
 use quick_xml::events::{BytesEnd, BytesStart, Event};
+
+use crate::EntityMode;
+use crate::error::ParseError;
 
 /// Inline elements whose content is native code — captured whole as one opaque
 /// placeholder (we never look inside).
@@ -18,72 +19,6 @@ const CODE_CONTENT: &[&[u8]] = &[b"bpt", b"ept", b"ph", b"it"];
 const TEXT_CONTENT: &[&[u8]] = &[b"g", b"mrk"];
 /// Empty inline elements — a single presence placeholder.
 const EMPTY: &[&[u8]] = &[b"x", b"bx", b"ex"];
-
-/// How text entity references are handled.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EntityMode {
-    /// Decode standard XML entities and numeric character references to their
-    /// characters (`&amp;` → `&`). Round-trip is content-identical.
-    Logical,
-    /// Keep entity references as their raw bytes (`&amp;` stays `&amp;`).
-    /// Round-trip is byte-identical.
-    Verbatim,
-}
-
-/// Why a segment couldn't be parsed.
-#[derive(Debug)]
-pub enum XliffParseError {
-    /// Encountered an element outside the XLIFF 1.2 inline content model.
-    UnknownTag {
-        /// The offending element's local name.
-        tag: String,
-    },
-    /// An XML construct with no place in inline content — a comment, processing
-    /// instruction, declaration, or doctype.
-    UnsupportedConstruct {
-        /// A short label for the construct (e.g. `"comment"`).
-        construct: String,
-    },
-    /// An entity reference that isn't a standard XML entity or numeric character
-    /// reference was found in text under [`EntityMode::Logical`].
-    UnknownEntity {
-        /// The reference as written, e.g. `&nbsp;`.
-        entity: String,
-    },
-    /// The underlying XML reader failed.
-    QuickXmlError {
-        /// The underlying error.
-        error: quick_xml::Error,
-    },
-}
-
-impl fmt::Display for XliffParseError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::UnknownTag { tag } => {
-                write!(f, "{tag:?} is not a known XLIFF 1.2 inline element")
-            }
-            Self::UnknownEntity { entity } => {
-                write!(f, "{entity:?} is not a standard XML entity")
-            }
-            Self::QuickXmlError { error } => write!(f, "quick_xml had an error: {error}"),
-            Self::UnsupportedConstruct { construct } => {
-                write!(
-                    f,
-                    "unsupported XML construct in segment content: {construct}"
-                )
-            }
-        }
-    }
-}
-
-impl std::error::Error for XliffParseError {}
-
-impl From<quick_xml::Error> for XliffParseError {
-    fn from(error: quick_xml::Error) -> Self {
-        Self::QuickXmlError { error }
-    }
-}
 
 /// Tokenizes one XLIFF 1.2 content fragment into [`ContentNode`]s.
 ///
@@ -101,12 +36,12 @@ impl From<quick_xml::Error> for XliffParseError {
 /// `&`. The pair composes to content-identity, not byte-identity.
 ///
 /// # Errors
-/// [`XliffParseError::UnknownTag`] for an element outside the XLIFF 1.2 inline
-/// set; [`XliffParseError::UnsupportedConstruct`] for a comment, processing
-/// instruction, declaration, or doctype; [`XliffParseError::UnknownEntity`] for a
-/// non-standard entity in text under [`EntityMode::Logical`]; or
-/// [`XliffParseError::QuickXmlError`] if the reader fails.
-pub fn parse_segment(content: &str, mode: EntityMode) -> Result<Vec<ContentNode>, XliffParseError> {
+/// [`ParseError::UnknownTag`] for an element outside the XLIFF 1.2 inline set;
+/// [`ParseError::UnsupportedConstruct`] for a comment, processing instruction,
+/// declaration, or doctype; [`ParseError::UnknownEntity`] for a non-standard
+/// entity in text under [`EntityMode::Logical`]; or [`ParseError::QuickXmlError`]
+/// if the reader fails.
+pub fn parse_segment(content: &str, mode: EntityMode) -> Result<Vec<ContentNode>, ParseError> {
     let mut parser = XliffSegmentParser::new(content, mode);
     parser.run()?;
     Ok(parser.nodes)
@@ -117,15 +52,15 @@ fn is_known_inline(name: &[u8]) -> bool {
     CODE_CONTENT.contains(&name) || TEXT_CONTENT.contains(&name) || EMPTY.contains(&name)
 }
 
-/// Builds an [`XliffParseError::UnknownTag`] from a raw element name.
-fn unknown_tag(name: &[u8]) -> XliffParseError {
-    XliffParseError::UnknownTag {
+/// Builds a [`ParseError::UnknownTag`] from a raw element name.
+fn unknown_tag(name: &[u8]) -> ParseError {
+    ParseError::UnknownTag {
         tag: String::from_utf8_lossy(name).into_owned(),
     }
 }
 
 /// Labels an XML construct we don't accept in inline content, for a loud error.
-fn unsupported(event: &Event) -> XliffParseError {
+fn unsupported(event: &Event) -> ParseError {
     let construct = match event {
         Event::Comment(_) => "comment",
         Event::PI(_) => "processing instruction",
@@ -133,7 +68,7 @@ fn unsupported(event: &Event) -> XliffParseError {
         Event::DocType(_) => "doctype",
         _ => "unexpected construct",
     };
-    XliffParseError::UnsupportedConstruct {
+    ParseError::UnsupportedConstruct {
         construct: construct.to_owned(),
     }
 }
@@ -164,7 +99,7 @@ impl<'a> XliffSegmentParser<'a> {
 
     /// Reads events to end of input. Text and entities accumulate into `pending`;
     /// an element boundary flushes that text and emits the element's placeholder.
-    fn run(&mut self) -> Result<(), XliffParseError> {
+    fn run(&mut self) -> Result<(), ParseError> {
         loop {
             let event = self.reader.read_event()?;
             match event {
@@ -189,7 +124,7 @@ impl<'a> XliffSegmentParser<'a> {
     /// An open tag. Code-content is swallowed whole as one placeholder; a
     /// text-content open tag becomes a placeholder and its inner content keeps
     /// flowing as later events.
-    fn handle_start(&mut self, node: BytesStart<'a>) -> Result<(), XliffParseError> {
+    fn handle_start(&mut self, node: BytesStart<'a>) -> Result<(), ParseError> {
         let name = node.local_name();
         if CODE_CONTENT.contains(&name.as_ref()) {
             self.reader.read_to_end(node.name())?;
@@ -204,7 +139,7 @@ impl<'a> XliffSegmentParser<'a> {
 
     /// A close tag. Only text-content closes reach here — code-content ends were
     /// already consumed by `read_to_end`.
-    fn handle_end(&mut self, node: BytesEnd<'a>) -> Result<(), XliffParseError> {
+    fn handle_end(&mut self, node: BytesEnd<'a>) -> Result<(), ParseError> {
         if TEXT_CONTENT.contains(&node.local_name().as_ref()) {
             self.push_placeholder();
             Ok(())
@@ -215,7 +150,7 @@ impl<'a> XliffSegmentParser<'a> {
 
     /// A self-closing inline element (`<x/>`, `<ph/>`, …): one presence
     /// placeholder, whatever its category.
-    fn handle_empty(&mut self, node: BytesStart<'a>) -> Result<(), XliffParseError> {
+    fn handle_empty(&mut self, node: BytesStart<'a>) -> Result<(), ParseError> {
         if is_known_inline(node.local_name().as_ref()) {
             self.push_placeholder();
             Ok(())
@@ -226,12 +161,12 @@ impl<'a> XliffSegmentParser<'a> {
 
     /// Appends an entity reference to the pending buffer — its raw bytes under
     /// [`EntityMode::Verbatim`], its decoded character under [`EntityMode::Logical`].
-    fn accumulate_entity(&mut self) -> Result<(), XliffParseError> {
+    fn accumulate_entity(&mut self) -> Result<(), ParseError> {
         let raw = self.take();
         match self.mode {
             EntityMode::Verbatim => self.pending.push_str(raw),
             EntityMode::Logical => {
-                let decoded = unescape(raw).map_err(|_| XliffParseError::UnknownEntity {
+                let decoded = unescape(raw).map_err(|_| ParseError::UnknownEntity {
                     entity: raw.to_owned(),
                 })?;
                 self.pending.push_str(&decoded);
@@ -437,7 +372,7 @@ mod tests {
     #[test]
     fn unknown_entity_under_logical_errors() {
         let error = parse_segment("plain &nbsp; text", EntityMode::Logical).unwrap_err();
-        assert!(matches!(error, XliffParseError::UnknownEntity { .. }));
+        assert!(matches!(error, ParseError::UnknownEntity { .. }));
     }
 
     #[test]
@@ -448,15 +383,12 @@ mod tests {
     #[test]
     fn unknown_element_errors() {
         let error = parse_segment("<foo>x</foo>", EntityMode::Logical).unwrap_err();
-        assert!(matches!(error, XliffParseError::UnknownTag { .. }));
+        assert!(matches!(error, ParseError::UnknownTag { .. }));
     }
 
     #[test]
     fn comment_errors_loudly() {
         let error = parse_segment("a<!-- nope -->b", EntityMode::Logical).unwrap_err();
-        assert!(matches!(
-            error,
-            XliffParseError::UnsupportedConstruct { .. }
-        ));
+        assert!(matches!(error, ParseError::UnsupportedConstruct { .. }));
     }
 }
