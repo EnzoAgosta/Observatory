@@ -94,6 +94,12 @@ impl From<quick_xml::Error> for XliffParseError {
 /// and CDATA are handled per `mode`; entities *inside* a placeholder are never
 /// touched.
 ///
+/// Logical decoding is deliberately broader than logical *emit*'s escaping: this
+/// decodes *every* standard entity (including `&quot;`/`&apos;`) and numeric
+/// references, so fragments differing only in escaping share an identity (§10),
+/// whereas [`emit_segment`](crate::emit::emit_segment) re-escapes only `<`, `>`,
+/// `&`. The pair composes to content-identity, not byte-identity.
+///
 /// # Errors
 /// [`XliffParseError::UnknownTag`] for an element outside the XLIFF 1.2 inline
 /// set; [`XliffParseError::UnsupportedConstruct`] for a comment, processing

@@ -1,95 +1,117 @@
-//! Emitting an [`Atom`] back to XLIFF 1.2 content — the inverse of
-//! [`parse`](crate::parse).
+//! Emitting [`ContentNode`]s back to an XLIFF 1.2 content fragment.
 //!
-//! Emission is a straight in-order walk of the atom's nodes: placeholders are
-//! written as their raw stored markup, and text is written per the [`Codec`]. It
-//! is infallible — every atom emits.
+//! [`emit_segment`] is the inverse of
+//! [`parse_segment`](crate::parse::parse_segment), under the same [`EntityMode`].
 
-use crate::codec::{Codec, EntityMode};
-use observatory_core::ir::Atom;
+use observatory_core::ir::ContentNode;
 use quick_xml::escape::partial_escape;
 
-/// Emits `atom` as an XLIFF 1.2 content fragment, treating text per `codec`.
+use crate::parse::EntityMode;
+
+/// Serializes content nodes into an XLIFF 1.2 inline fragment — the inverse of
+/// [`parse_segment`](crate::parse::parse_segment) under the same `mode`.
 ///
-/// Placeholder markup is written verbatim (it was stored raw). Under
-/// [`EntityMode::Logical`] text is re-escaped with partial escaping (`<`, `>`,
-/// `&`; quotes are left alone, since they need no escaping in element content);
-/// under [`EntityMode::Verbatim`] text is written exactly as stored. Use the same
-/// `codec` that produced the atom.
-pub fn emit(atom: &Atom, codec: Codec) -> String {
-    let mut out = String::new();
-    for node in atom.content() {
-        if node.is_placeholder() {
-            out.push_str(node.data());
-        } else {
-            match codec.entities {
-                EntityMode::Logical => out.push_str(&partial_escape(node.data())),
-                EntityMode::Verbatim => out.push_str(node.data()),
-            }
-        }
+/// Placeholders are always written raw (they already hold markup). Under
+/// [`EntityMode::Verbatim`] text is written raw too, so the result is
+/// byte-identical to what was parsed; under [`EntityMode::Logical`] text is
+/// re-escaped (`<`, `>`, `&`; quotes left untouched), so the result is
+/// content-identical.
+///
+/// The escape set is deliberately narrower than
+/// [`parse_segment`](crate::parse::parse_segment)'s decoding: parse decodes *all*
+/// standard entities (so `&quot;` and `"` share an identity), while emit escapes
+/// only what XML text content requires and leaves quotes raw. The two compose to
+/// content-identity, not byte-identity.
+pub fn emit_segment(content: &[ContentNode], mode: EntityMode) -> String {
+    match mode {
+        EntityMode::Verbatim => content.iter().map(ContentNode::as_str).collect(),
+        EntityMode::Logical => content
+            .iter()
+            .map(|node| match node {
+                ContentNode::Text(_) => partial_escape(node.as_str()).into_owned(),
+                ContentNode::Placeholder(_) => node.as_str().to_owned(),
+            })
+            .collect(),
     }
-    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use observatory_core::ir::{ContentNode, LanguageTag};
+    use crate::parse::parse_segment;
 
-    fn atom(nodes: impl IntoIterator<Item = ContentNode>) -> Atom {
-        Atom::new(LanguageTag::parse("en-us").unwrap(), nodes)
+    fn text(data: &str) -> ContentNode {
+        ContentNode::text(data)
+    }
+
+    fn placeholder(data: &str) -> ContentNode {
+        ContentNode::placeholder(data)
     }
 
     #[test]
-    fn emits_plain_text() {
-        let atom = atom([ContentNode::text("Hello, world")]);
-        assert_eq!(emit(&atom, Codec::logical()), "Hello, world");
-    }
-
-    #[test]
-    fn writes_placeholder_markup_verbatim() {
-        let atom = atom([
-            ContentNode::text("Click "),
-            ContentNode::placeholder(r#"<g id="1">"#),
-            ContentNode::text("here"),
-            ContentNode::placeholder("</g>"),
-        ]);
-        assert_eq!(emit(&atom, Codec::logical()), r#"Click <g id="1">here</g>"#);
-    }
-
-    #[test]
-    fn logical_mode_escapes_text_specials() {
-        let atom = atom([ContentNode::text("Tom & Jerry <3")]);
-        assert_eq!(emit(&atom, Codec::logical()), "Tom &amp; Jerry &lt;3");
-    }
-
-    #[test]
-    fn logical_mode_leaves_quotes_unescaped() {
-        // Quotes need no escaping in element content; partial escaping leaves them.
-        let atom = atom([ContentNode::text(r#"say "hi" it's fine"#)]);
-        assert_eq!(emit(&atom, Codec::logical()), r#"say "hi" it's fine"#);
-    }
-
-    #[test]
-    fn verbatim_mode_does_not_escape_text() {
-        // Verbatim text is already in its escaped form; emit must not double-escape.
-        let atom = atom([ContentNode::text("Tom &amp; Jerry")]);
-        assert_eq!(emit(&atom, Codec::verbatim()), "Tom &amp; Jerry");
-    }
-
-    #[test]
-    fn placeholder_markup_is_never_escaped() {
-        // Even with text-affecting modes, raw markup passes through untouched.
-        let atom = atom([ContentNode::placeholder(r#"<ph id="1">&lt;br/&gt;</ph>"#)]);
+    fn verbatim_joins_nodes_raw() {
+        let nodes = [text("Tom &amp; "), placeholder("<x/>"), text("Jerry")];
         assert_eq!(
-            emit(&atom, Codec::logical()),
-            r#"<ph id="1">&lt;br/&gt;</ph>"#
+            emit_segment(&nodes, EntityMode::Verbatim),
+            "Tom &amp; <x/>Jerry"
         );
     }
 
     #[test]
-    fn empty_atom_emits_empty_string() {
-        let atom = atom([]);
-        assert_eq!(emit(&atom, Codec::logical()), "");
+    fn logical_escapes_markup_characters_in_text() {
+        assert_eq!(
+            emit_segment(&[text("a < b & c > d")], EntityMode::Logical),
+            "a &lt; b &amp; c &gt; d"
+        );
+    }
+
+    #[test]
+    fn logical_leaves_quotes_unescaped() {
+        // partial escaping, not full — quotes are legal raw in text content.
+        assert_eq!(
+            emit_segment(&[text(r#"say "hi" it's fine"#)], EntityMode::Logical),
+            r#"say "hi" it's fine"#
+        );
+    }
+
+    #[test]
+    fn placeholders_are_emitted_raw_in_both_modes() {
+        let nodes = [placeholder(r#"<ph id="1">&amp;</ph>"#)];
+        assert_eq!(
+            emit_segment(&nodes, EntityMode::Logical),
+            r#"<ph id="1">&amp;</ph>"#
+        );
+        assert_eq!(
+            emit_segment(&nodes, EntityMode::Verbatim),
+            r#"<ph id="1">&amp;</ph>"#
+        );
+    }
+
+    #[test]
+    fn verbatim_round_trip_is_byte_identical() {
+        for input in [
+            "plain text",
+            r#"a<g id="1">b &amp; c</g><x/>d"#,
+            r#"<ph id="1">x</ph>"#,
+        ] {
+            let nodes = parse_segment(input, EntityMode::Verbatim).unwrap();
+            assert_eq!(emit_segment(&nodes, EntityMode::Verbatim), input);
+        }
+    }
+
+    #[test]
+    fn logical_round_trip_preserves_content() {
+        // Logical is content-identical, not byte-identical: re-parsing the emitted
+        // fragment yields the same nodes (e.g. CDATA is re-serialized as escaped
+        // text, but the content is unchanged).
+        for input in [
+            "Tom &amp; Jerry &lt;3",
+            r#"a<g id="1">x</g>b"#,
+            "a<![CDATA[b & c]]>d",
+        ] {
+            let nodes = parse_segment(input, EntityMode::Logical).unwrap();
+            let emitted = emit_segment(&nodes, EntityMode::Logical);
+            assert_eq!(parse_segment(&emitted, EntityMode::Logical).unwrap(), nodes);
+        }
     }
 }
