@@ -1,474 +1,285 @@
-//! Parsing an XLIFF 1.2 content fragment into an [`Atom`].
+//! Parsing one XLIFF 1.2 content fragment into [`ContentNode`]s.
 //!
-//! The fragment is the *body* of a `<source>` / `<target>` — the inline content,
-//! not the wrapping element. The language is supplied by the caller (it lives a
-//! level up, on `<file>`), which also gates the caller's own validity.
-//!
-//! The tokenizer is a single forward pass over the XML events; the structure of
-//! placeholder pairing is never reconstructed, because an atom's identity cares
-//! only about placeholder *position and count*, not which open pairs with which
-//! close. Each element is classified solely by what XLIFF 1.2 says its content is:
-//!
-//! - **native code** (`<bpt>`, `<ept>`, `<ph>`, `<it>`): the whole element,
-//!   including any nested `<sub>`, is read to its end and recorded as one opaque
-//!   placeholder.
-//! - **translatable text** (`<g>`, `<mrk>`): the open tag and close tag each
-//!   become a placeholder, and the inner content is tokenized as text.
-//! - **empty inline** (`<x/>`, `<bx/>`, `<ex/>`): a single placeholder.
-//!
-//! Placeholders are recorded as the raw bytes of the input, so attribute order
-//! and quoting survive untouched.
+//! [`parse_segment`] is a stateless tokenizer over the inline body of a
+//! `<source>`/`<target>`; see its docs for the content model and entity handling.
 
-use crate::codec::{Codec, EntityMode};
-use crate::error::ParseError;
-use observatory_core::ir::{Atom, ContentNode, LanguageTag};
-use quick_xml::escape::resolve_predefined_entity;
-use quick_xml::events::Event;
-use quick_xml::reader::Reader;
+use std::fmt;
 
-/// Parses an XLIFF 1.2 content fragment into an [`Atom`] in `language`, treating
-/// entities per `codec`.
+use observatory_core::ir::ContentNode;
+use quick_xml::Reader;
+use quick_xml::escape::unescape;
+use quick_xml::events::{BytesEnd, BytesStart, Event};
+
+/// Inline elements whose content is native code — captured whole as one opaque
+/// placeholder (we never look inside).
+const CODE_CONTENT: &[&[u8]] = &[b"bpt", b"ept", b"ph", b"it"];
+/// Inline elements whose content is translatable text — the tags become
+/// placeholders and the inner text is kept.
+const TEXT_CONTENT: &[&[u8]] = &[b"g", b"mrk"];
+/// Empty inline elements — a single presence placeholder.
+const EMPTY: &[&[u8]] = &[b"x", b"bx", b"ex"];
+
+/// How text entity references are handled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EntityMode {
+    /// Decode standard XML entities and numeric character references to their
+    /// characters (`&amp;` → `&`). Round-trip is content-identical.
+    Logical,
+    /// Keep entity references as their raw bytes (`&amp;` stays `&amp;`).
+    /// Round-trip is byte-identical.
+    Verbatim,
+}
+
+/// Why a segment couldn't be parsed.
+#[derive(Debug)]
+pub enum XliffParseError {
+    /// Encountered an element outside the XLIFF 1.2 inline content model.
+    UnknownTag {
+        /// The offending element's local name.
+        tag: String,
+    },
+    /// An XML construct with no place in inline content — a comment, processing
+    /// instruction, declaration, or doctype.
+    UnsupportedConstruct {
+        /// A short label for the construct (e.g. `"comment"`).
+        construct: String,
+    },
+    /// An entity reference that isn't a standard XML entity or numeric character
+    /// reference was found in text under [`EntityMode::Logical`].
+    UnknownEntity {
+        /// The reference as written, e.g. `&nbsp;`.
+        entity: String,
+    },
+    /// The underlying XML reader failed.
+    QuickXmlError {
+        /// The underlying error.
+        error: quick_xml::Error,
+    },
+}
+
+impl fmt::Display for XliffParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnknownTag { tag } => {
+                write!(f, "{tag:?} is not a known XLIFF 1.2 inline element")
+            }
+            Self::UnknownEntity { entity } => {
+                write!(f, "{entity:?} is not a standard XML entity")
+            }
+            Self::QuickXmlError { error } => write!(f, "quick_xml had an error: {error}"),
+            Self::UnsupportedConstruct { construct } => {
+                write!(
+                    f,
+                    "unsupported XML construct in segment content: {construct}"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for XliffParseError {}
+
+impl From<quick_xml::Error> for XliffParseError {
+    fn from(error: quick_xml::Error) -> Self {
+        Self::QuickXmlError { error }
+    }
+}
+
+/// Tokenizes one XLIFF 1.2 content fragment into [`ContentNode`]s.
 ///
-/// `content` is the inline body of a content node (e.g. what sits between
-/// `<source>` and `</source>`). The fragment is assumed to be well-formed,
-/// already-extracted XLIFF; structural or entity problems surface as a
-/// [`ParseError`].
+/// `content` is the inline body of a `<source>`/`<target>` (the wrapping element
+/// already stripped by the caller), assumed well-formed. Translatable text becomes
+/// [`ContentNode::Text`]; every inline element becomes an opaque
+/// [`ContentNode::Placeholder`] holding its raw markup verbatim. Text, entities,
+/// and CDATA are handled per `mode`; entities *inside* a placeholder are never
+/// touched.
 ///
 /// # Errors
-/// See [`ParseError`]: malformed XML, an unknown named entity under
-/// [`EntityMode::Logical`], a non-inline element, or an unsupported XML construct.
-pub fn parse(content: &str, language: LanguageTag, codec: Codec) -> Result<Atom, ParseError> {
-    let mut reader = Reader::from_str(content);
-    let mut nodes: Vec<ContentNode> = Vec::new();
-    let mut run = TextRun::new(codec.entities, content);
-
-    loop {
-        let start = reader.buffer_position() as usize;
-        let event = reader.read_event().map_err(|e| ParseError::Malformed {
-            detail: e.to_string(),
-        })?;
-        let end = reader.buffer_position() as usize;
-
-        match event {
-            Event::Eof => break,
-
-            Event::Text(text) => {
-                run.note(start, end);
-                if codec.entities == EntityMode::Logical {
-                    let decoded = text.decode().map_err(|e| ParseError::Malformed {
-                        detail: e.to_string(),
-                    })?;
-                    run.push_str(&decoded);
-                }
-            }
-
-            Event::CData(cdata) => {
-                run.note(start, end);
-                if codec.entities == EntityMode::Logical {
-                    let decoded =
-                        std::str::from_utf8(&cdata).map_err(|e| ParseError::Malformed {
-                            detail: e.to_string(),
-                        })?;
-                    run.push_str(decoded);
-                }
-            }
-
-            Event::GeneralRef(reference) => {
-                run.note(start, end);
-                if codec.entities == EntityMode::Logical {
-                    resolve_reference(&reference, &mut run)?;
-                }
-            }
-
-            Event::Start(tag) => {
-                run.flush(&mut nodes);
-                match classify(tag.local_name().as_ref()) {
-                    Some(Inline::Code) => {
-                        reader
-                            .read_to_end(tag.name())
-                            .map_err(|e| ParseError::Malformed {
-                                detail: e.to_string(),
-                            })?;
-                        let element_end = reader.buffer_position() as usize;
-                        nodes.push(ContentNode::placeholder(&content[start..element_end]));
-                    }
-                    Some(Inline::Text) => {
-                        nodes.push(ContentNode::placeholder(&content[start..end]));
-                    }
-                    None => return Err(unexpected_element(tag.local_name().as_ref())),
-                }
-            }
-
-            Event::Empty(tag) => {
-                run.flush(&mut nodes);
-                if classify(tag.local_name().as_ref()).is_some() {
-                    nodes.push(ContentNode::placeholder(&content[start..end]));
-                } else {
-                    return Err(unexpected_element(tag.local_name().as_ref()));
-                }
-            }
-
-            Event::End(tag) => {
-                run.flush(&mut nodes);
-                match classify(tag.local_name().as_ref()) {
-                    Some(Inline::Text) => {
-                        nodes.push(ContentNode::placeholder(&content[start..end]));
-                    }
-                    _ => return Err(unexpected_element(tag.local_name().as_ref())),
-                }
-            }
-
-            Event::Comment(_) => return Err(unsupported("comment")),
-            Event::PI(_) => return Err(unsupported("processing instruction")),
-            Event::Decl(_) => return Err(unsupported("XML declaration")),
-            Event::DocType(_) => return Err(unsupported("doctype")),
-        }
-    }
-
-    run.flush(&mut nodes);
-    Ok(Atom::new(language, nodes))
+/// [`XliffParseError::UnknownTag`] for an element outside the XLIFF 1.2 inline
+/// set; [`XliffParseError::UnsupportedConstruct`] for a comment, processing
+/// instruction, declaration, or doctype; [`XliffParseError::UnknownEntity`] for a
+/// non-standard entity in text under [`EntityMode::Logical`]; or
+/// [`XliffParseError::QuickXmlError`] if the reader fails.
+pub fn parse_segment(content: &str, mode: EntityMode) -> Result<Vec<ContentNode>, XliffParseError> {
+    let mut parser = XliffSegmentParser::new(content, mode);
+    parser.run()?;
+    Ok(parser.nodes)
 }
 
-/// What an XLIFF 1.2 inline element's content model is — the only distinction the
-/// tokenizer draws.
-enum Inline {
-    /// Content is native code; the whole element is one opaque placeholder.
-    Code,
-    /// Content is translatable text; the tags bracket text that is kept.
-    Text,
+/// True if `name` is one of the XLIFF 1.2 inline elements we recognize.
+fn is_known_inline(name: &[u8]) -> bool {
+    CODE_CONTENT.contains(&name) || TEXT_CONTENT.contains(&name) || EMPTY.contains(&name)
 }
 
-/// Classifies an inline element by local name, or `None` if it is not an XLIFF
-/// 1.2 inline element. Empty inline elements (`x`, `bx`, `ex`) report `Text` —
-/// they have no content, so the distinction is moot, but it marks them as known.
-fn classify(local_name: &[u8]) -> Option<Inline> {
-    match local_name {
-        b"bpt" | b"ept" | b"ph" | b"it" => Some(Inline::Code),
-        b"g" | b"mrk" | b"x" | b"bx" | b"ex" => Some(Inline::Text),
-        _ => None,
+/// Builds an [`XliffParseError::UnknownTag`] from a raw element name.
+fn unknown_tag(name: &[u8]) -> XliffParseError {
+    XliffParseError::UnknownTag {
+        tag: String::from_utf8_lossy(name).into_owned(),
     }
 }
 
-/// Resolves a general reference into the logical text run: a numeric character
-/// reference to its character, a predefined entity to its replacement, and
-/// anything else to a hard error.
-fn resolve_reference(
-    reference: &quick_xml::events::BytesRef<'_>,
-    run: &mut TextRun<'_>,
-) -> Result<(), ParseError> {
-    if let Some(character) = reference
-        .resolve_char_ref()
-        .map_err(|e| ParseError::Malformed {
-            detail: e.to_string(),
-        })?
-    {
-        run.push_char(character);
-        return Ok(());
-    }
-
-    let name = reference.decode().map_err(|e| ParseError::Malformed {
-        detail: e.to_string(),
-    })?;
-    match resolve_predefined_entity(&name) {
-        Some(replacement) => {
-            run.push_str(replacement);
-            Ok(())
-        }
-        None => Err(ParseError::UnknownEntity {
-            entity: name.into_owned(),
-        }),
-    }
-}
-
-fn unexpected_element(local_name: &[u8]) -> ParseError {
-    ParseError::UnexpectedElement {
-        name: String::from_utf8_lossy(local_name).into_owned(),
-    }
-}
-
-fn unsupported(construct: &str) -> ParseError {
-    ParseError::UnsupportedConstruct {
+/// Labels an XML construct we don't accept in inline content, for a loud error.
+fn unsupported(event: &Event) -> XliffParseError {
+    let construct = match event {
+        Event::Comment(_) => "comment",
+        Event::PI(_) => "processing instruction",
+        Event::Decl(_) => "XML declaration",
+        Event::DocType(_) => "doctype",
+        _ => "unexpected construct",
+    };
+    XliffParseError::UnsupportedConstruct {
         construct: construct.to_owned(),
     }
 }
 
-/// Accumulates a run of text across consecutive text, CDATA, and reference events,
-/// flushing it as a single [`ContentNode`] when a placeholder or the end is
-/// reached.
-///
-/// In [`EntityMode::Verbatim`] only the input byte span is tracked, so the run is
-/// emitted exactly as written. In [`EntityMode::Logical`] the decoded characters
-/// are accumulated instead.
-struct TextRun<'a> {
+/// The mutable state threaded through one parse: the reader, the source it borrows
+/// from, the chosen entity mode, the nodes collected so far, the text accumulated
+/// since the last element boundary, and the byte offset just past what's consumed.
+struct XliffSegmentParser<'a> {
+    reader: Reader<&'a [u8]>,
+    content: &'a str,
     mode: EntityMode,
-    source: &'a str,
-    span_start: usize,
-    span_end: usize,
-    started: bool,
-    logical: String,
+    nodes: Vec<ContentNode>,
+    pending: String,
+    cursor: usize,
 }
 
-impl<'a> TextRun<'a> {
-    fn new(mode: EntityMode, source: &'a str) -> Self {
+impl<'a> XliffSegmentParser<'a> {
+    fn new(content: &'a str, mode: EntityMode) -> Self {
         Self {
+            reader: Reader::from_str(content),
+            content,
             mode,
-            source,
-            span_start: 0,
-            span_end: 0,
-            started: false,
-            logical: String::new(),
+            nodes: Vec::new(),
+            pending: String::new(),
+            cursor: 0,
         }
     }
 
-    /// Records that the byte range `start..end` of the input belongs to the
-    /// current run, extending it (or starting it).
-    fn note(&mut self, start: usize, end: usize) {
-        if !self.started {
-            self.span_start = start;
-            self.started = true;
+    /// Reads events to end of input. Text and entities accumulate into `pending`;
+    /// an element boundary flushes that text and emits the element's placeholder.
+    fn run(&mut self) -> Result<(), XliffParseError> {
+        loop {
+            let event = self.reader.read_event()?;
+            match event {
+                Event::Text(_) => self.accumulate(),
+                Event::GeneralRef(_) => self.accumulate_entity()?,
+                Event::CData(_) => self.accumulate_cdata(),
+                Event::Start(node) => self.handle_start(node)?,
+                Event::End(node) => self.handle_end(node)?,
+                Event::Empty(node) => self.handle_empty(node)?,
+                Event::Eof => {
+                    self.flush();
+                    break;
+                }
+                // Anything else — comment, PI, declaration, doctype — has no
+                // place in inline content. Fail loud rather than drop it.
+                other => return Err(unsupported(&other)),
+            }
         }
-        self.span_end = end;
+        Ok(())
     }
 
-    fn push_str(&mut self, text: &str) {
-        self.logical.push_str(text);
-    }
-
-    fn push_char(&mut self, character: char) {
-        self.logical.push(character);
-    }
-
-    /// Emits the accumulated run as a text node (if any) and resets, ready for the
-    /// next run.
-    fn flush(&mut self, nodes: &mut Vec<ContentNode>) {
-        if !self.started {
-            return;
+    /// An open tag. Code-content is swallowed whole as one placeholder; a
+    /// text-content open tag becomes a placeholder and its inner content keeps
+    /// flowing as later events.
+    fn handle_start(&mut self, node: BytesStart<'a>) -> Result<(), XliffParseError> {
+        let name = node.local_name();
+        if CODE_CONTENT.contains(&name.as_ref()) {
+            self.reader.read_to_end(node.name())?;
+            self.push_placeholder();
+        } else if TEXT_CONTENT.contains(&name.as_ref()) {
+            self.push_placeholder();
+        } else {
+            return Err(unknown_tag(name.as_ref()));
         }
-        let node = match self.mode {
-            EntityMode::Verbatim => ContentNode::text(&self.source[self.span_start..self.span_end]),
-            EntityMode::Logical => ContentNode::text(std::mem::take(&mut self.logical)),
-        };
-        nodes.push(node);
-        self.started = false;
-        self.logical.clear();
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn en() -> LanguageTag {
-        LanguageTag::parse("en-us").unwrap()
+        Ok(())
     }
 
-    fn parse_logical(content: &str) -> Result<Atom, ParseError> {
-        parse(content, en(), Codec::logical())
+    /// A close tag. Only text-content closes reach here — code-content ends were
+    /// already consumed by `read_to_end`.
+    fn handle_end(&mut self, node: BytesEnd<'a>) -> Result<(), XliffParseError> {
+        if TEXT_CONTENT.contains(&node.local_name().as_ref()) {
+            self.push_placeholder();
+            Ok(())
+        } else {
+            Err(unknown_tag(node.local_name().as_ref()))
+        }
     }
 
-    /// Asserts an atom's nodes, each as (is_placeholder, data).
-    fn assert_nodes(atom: &Atom, expected: &[(bool, &str)]) {
-        let actual: Vec<(bool, &str)> = atom
-            .content()
-            .iter()
-            .map(|node| (node.is_placeholder(), node.data()))
-            .collect();
-        assert_eq!(actual, expected);
+    /// A self-closing inline element (`<x/>`, `<ph/>`, …): one presence
+    /// placeholder, whatever its category.
+    fn handle_empty(&mut self, node: BytesStart<'a>) -> Result<(), XliffParseError> {
+        if is_known_inline(node.local_name().as_ref()) {
+            self.push_placeholder();
+            Ok(())
+        } else {
+            Err(unknown_tag(node.local_name().as_ref()))
+        }
     }
 
-    #[test]
-    fn plain_text_is_one_text_node() {
-        let atom = parse_logical("Hello, world").unwrap();
-        assert_nodes(&atom, &[(false, "Hello, world")]);
-    }
-
-    #[test]
-    fn empty_fragment_has_no_nodes() {
-        let atom = parse_logical("").unwrap();
-        assert!(atom.content().is_empty());
-    }
-
-    #[test]
-    fn paired_g_brackets_kept_text() {
-        // <g> wraps translatable text: open/close become placeholders, "here"
-        // stays as text.
-        let atom = parse_logical(r#"Click <g id="1">here</g>"#).unwrap();
-        assert_nodes(
-            &atom,
-            &[
-                (false, "Click "),
-                (true, r#"<g id="1">"#),
-                (false, "here"),
-                (true, "</g>"),
-            ],
-        );
-    }
-
-    #[test]
-    fn nested_g_records_each_boundary_in_order() {
-        let atom = parse_logical(r#"<g id="1">a<g id="2">b</g>c</g>"#).unwrap();
-        assert_nodes(
-            &atom,
-            &[
-                (true, r#"<g id="1">"#),
-                (false, "a"),
-                (true, r#"<g id="2">"#),
-                (false, "b"),
-                (true, "</g>"),
-                (false, "c"),
-                (true, "</g>"),
-            ],
-        );
-    }
-
-    #[test]
-    fn code_element_is_one_opaque_placeholder() {
-        // <ph> content is native code; the whole element is hidden from the atom.
-        let atom = parse_logical(r#"a<ph id="1">&lt;br/&gt;</ph>b"#).unwrap();
-        assert_nodes(
-            &atom,
-            &[
-                (false, "a"),
-                (true, r#"<ph id="1">&lt;br/&gt;</ph>"#),
-                (false, "b"),
-            ],
-        );
-    }
-
-    #[test]
-    fn bpt_ept_are_each_one_placeholder() {
-        let atom =
-            parse_logical(r#"<bpt id="1">&lt;b&gt;</bpt>x<ept id="1">&lt;/b&gt;</ept>"#).unwrap();
-        assert_nodes(
-            &atom,
-            &[
-                (true, r#"<bpt id="1">&lt;b&gt;</bpt>"#),
-                (false, "x"),
-                (true, r#"<ept id="1">&lt;/b&gt;</ept>"#),
-            ],
-        );
-    }
-
-    #[test]
-    fn sub_inside_code_stays_opaque() {
-        // <sub> carries translatable text, but it is inside native code, so the
-        // whole <ph> (sub and all) is one opaque placeholder.
-        let atom = parse_logical(r#"<ph id="1">img(<sub>alt text</sub>)</ph>"#).unwrap();
-        assert_nodes(
-            &atom,
-            &[(true, r#"<ph id="1">img(<sub>alt text</sub>)</ph>"#)],
-        );
-    }
-
-    #[test]
-    fn empty_inline_elements_are_single_placeholders() {
-        let atom = parse_logical(r#"a<x id="1"/>b<bx id="2"/>c<ex id="2"/>"#).unwrap();
-        assert_nodes(
-            &atom,
-            &[
-                (false, "a"),
-                (true, r#"<x id="1"/>"#),
-                (false, "b"),
-                (true, r#"<bx id="2"/>"#),
-                (false, "c"),
-                (true, r#"<ex id="2"/>"#),
-            ],
-        );
-    }
-
-    #[test]
-    fn mrk_is_treated_like_g_for_now() {
-        let atom = parse_logical(r#"<mrk mtype="term">CPU</mrk>"#).unwrap();
-        assert_nodes(
-            &atom,
-            &[
-                (true, r#"<mrk mtype="term">"#),
-                (false, "CPU"),
-                (true, "</mrk>"),
-            ],
-        );
-    }
-
-    #[test]
-    fn logical_mode_decodes_predefined_entities() {
-        let atom = parse_logical("Tom &amp; Jerry &lt;3").unwrap();
-        assert_nodes(&atom, &[(false, "Tom & Jerry <3")]);
-    }
-
-    #[test]
-    fn logical_mode_decodes_numeric_character_references() {
-        let atom = parse_logical("A&#38;B&#x26;C").unwrap();
-        assert_nodes(&atom, &[(false, "A&B&C")]);
-    }
-
-    #[test]
-    fn verbatim_mode_keeps_entities_raw() {
-        let atom = parse("Tom &amp; Jerry", en(), Codec::verbatim()).unwrap();
-        assert_nodes(&atom, &[(false, "Tom &amp; Jerry")]);
-    }
-
-    #[test]
-    fn verbatim_mode_accepts_unknown_entities() {
-        // Verbatim never resolves, so a custom entity is just raw bytes.
-        let atom = parse("a &custom; b", en(), Codec::verbatim()).unwrap();
-        assert_nodes(&atom, &[(false, "a &custom; b")]);
-    }
-
-    #[test]
-    fn logical_mode_rejects_unknown_entities() {
-        let error = parse("a &custom; b", en(), Codec::logical()).unwrap_err();
-        assert_eq!(
-            error,
-            ParseError::UnknownEntity {
-                entity: "custom".to_owned()
+    /// Appends an entity reference to the pending buffer — its raw bytes under
+    /// [`EntityMode::Verbatim`], its decoded character under [`EntityMode::Logical`].
+    fn accumulate_entity(&mut self) -> Result<(), XliffParseError> {
+        let raw = self.take();
+        match self.mode {
+            EntityMode::Verbatim => self.pending.push_str(raw),
+            EntityMode::Logical => {
+                let decoded = unescape(raw).map_err(|_| XliffParseError::UnknownEntity {
+                    entity: raw.to_owned(),
+                })?;
+                self.pending.push_str(&decoded);
             }
-        );
+        }
+        Ok(())
     }
 
-    #[test]
-    fn non_inline_element_is_rejected() {
-        let error = parse_logical("<span>x</span>").unwrap_err();
-        assert_eq!(
-            error,
-            ParseError::UnexpectedElement {
-                name: "span".to_owned()
+    /// Appends a CDATA section to the pending buffer. CDATA is character data, so
+    /// it follows the mode like text and entities: its raw `<![CDATA[…]]>` bytes
+    /// under [`EntityMode::Verbatim`], its unwrapped content under
+    /// [`EntityMode::Logical`]. The content is never markup- or entity-parsed —
+    /// inside CDATA there are none — so logical only strips the delimiters.
+    fn accumulate_cdata(&mut self) {
+        let raw = self.take();
+        match self.mode {
+            EntityMode::Verbatim => self.pending.push_str(raw),
+            EntityMode::Logical => {
+                let inner = &raw["<![CDATA[".len()..raw.len() - "]]>".len()];
+                self.pending.push_str(inner);
             }
-        );
+        }
     }
 
-    #[test]
-    fn comment_is_unsupported() {
-        let error = parse_logical("a<!-- note -->b").unwrap_err();
-        assert_eq!(
-            error,
-            ParseError::UnsupportedConstruct {
-                construct: "comment".to_owned()
-            }
-        );
+    /// Appends the current text run to the pending buffer (raw bytes).
+    fn accumulate(&mut self) {
+        let raw = self.take();
+        self.pending.push_str(raw);
     }
 
-    #[test]
-    fn mismatched_end_tag_is_rejected() {
-        // Genuinely ill-formed XML (an end tag that doesn't match its open) is
-        // caught by the XML layer and surfaces as Malformed.
-        assert!(matches!(
-            parse_logical(r#"<g id="1">x</b>"#),
-            Err(ParseError::Malformed { .. })
-        ));
+    /// Flushes any accumulated text as a single [`ContentNode::Text`].
+    fn flush(&mut self) {
+        if !self.pending.is_empty() {
+            self.nodes
+                .push(ContentNode::text(std::mem::take(&mut self.pending)));
+        }
     }
 
-    #[test]
-    fn unclosed_container_is_recorded_faithfully() {
-        // We do not validate structural balance — that is a layer-above concern.
-        // An unclosed <g> is recorded as exactly what it is and round-trips.
-        let atom = parse_logical(r#"<g id="1">oops"#).unwrap();
-        assert_nodes(&atom, &[(true, r#"<g id="1">"#), (false, "oops")]);
+    /// Flushes any pending text, then records everything since the cursor as a
+    /// placeholder node — so the text before this element lands before it.
+    fn push_placeholder(&mut self) {
+        self.flush();
+        let raw = self.take();
+        self.nodes.push(ContentNode::placeholder(raw));
     }
 
-    #[test]
-    fn outer_whitespace_is_preserved_as_text() {
-        // Trimming is identity's job, not the adapter's: the run is faithful.
-        let atom = parse_logical("  hi  ").unwrap();
-        assert_nodes(&atom, &[(false, "  hi  ")]);
+    /// The raw source from the cursor up to the reader's current position,
+    /// advancing the cursor past it. The slice borrows the original `content`, so
+    /// it outlives the `&mut self` borrow.
+    fn take(&mut self) -> &'a str {
+        let content = self.content;
+        let end = usize::try_from(self.reader.buffer_position()).expect("position fits usize");
+        let raw = &content[self.cursor..end];
+        self.cursor = end;
+        raw
     }
 }
