@@ -122,3 +122,157 @@ pub fn id_from_atom(atom: &Atom) -> AtomId {
     let digest = Sha256::digest(bytes);
     AtomId::from_digest(digest.into())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ir::LanguageTag;
+
+    /// Builds an `en-US` atom from the given nodes — keeps the tests terse.
+    fn en(nodes: impl IntoIterator<Item = ContentNode>) -> Atom {
+        Atom::new(LanguageTag::from_string("en-US").unwrap(), nodes)
+    }
+
+    #[test]
+    fn id_is_deterministic() {
+        let atom = en([ContentNode::text("hello"), ContentNode::placeholder("<x/>")]);
+        assert_eq!(id_from_atom(&atom), id_from_atom(&atom));
+    }
+
+    #[test]
+    fn different_text_changes_the_id() {
+        assert_ne!(
+            id_from_atom(&en([ContentNode::text("a")])),
+            id_from_atom(&en([ContentNode::text("b")])),
+        );
+    }
+
+    #[test]
+    fn placeholder_markup_does_not_affect_the_id() {
+        // Identity excludes placeholder markup — only its presence and position
+        // count, so two taggings of the same text agree.
+        let bold = en([
+            ContentNode::text("Click "),
+            ContentNode::placeholder("<b>"),
+            ContentNode::text("here"),
+            ContentNode::placeholder("</b>"),
+        ]);
+        let vars = en([
+            ContentNode::text("Click "),
+            ContentNode::placeholder("{0}"),
+            ContentNode::text("here"),
+            ContentNode::placeholder("{1}"),
+        ]);
+        assert_eq!(id_from_atom(&bold), id_from_atom(&vars));
+    }
+
+    #[test]
+    fn placeholder_count_and_position_change_the_id() {
+        let two = en([
+            ContentNode::placeholder("<b>"),
+            ContentNode::text("x"),
+            ContentNode::placeholder("</b>"),
+        ]);
+        let one = en([ContentNode::text("x"), ContentNode::placeholder("<br/>")]);
+        assert_ne!(id_from_atom(&two), id_from_atom(&one));
+    }
+
+    #[test]
+    fn text_chunking_changes_the_id() {
+        // D29: identity does not collapse, so how text is split is significant.
+        let merged = en([ContentNode::text("ab")]);
+        let split = en([ContentNode::text("a"), ContentNode::text("b")]);
+        assert_ne!(id_from_atom(&merged), id_from_atom(&split));
+    }
+
+    #[test]
+    fn empty_text_run_changes_the_id() {
+        let with_empty = en([ContentNode::text(""), ContentNode::text("x")]);
+        let without = en([ContentNode::text("x")]);
+        assert_ne!(id_from_atom(&with_empty), id_from_atom(&without));
+    }
+
+    #[test]
+    fn surrounding_whitespace_changes_the_id() {
+        // D29: identity does not trim or fold whitespace.
+        assert_ne!(
+            id_from_atom(&en([ContentNode::text(" hi ")])),
+            id_from_atom(&en([ContentNode::text("hi")])),
+        );
+    }
+
+    #[test]
+    fn language_case_changes_the_id() {
+        // D29: the tag is serialized verbatim, so case is significant.
+        let upper = en([ContentNode::text("hi")]);
+        let lower = Atom::new(
+            LanguageTag::from_string("en-us").unwrap(),
+            [ContentNode::text("hi")],
+        );
+        assert_ne!(id_from_atom(&upper), id_from_atom(&lower));
+    }
+
+    #[test]
+    fn different_language_changes_the_id() {
+        // Same bytes, different language — e.g. the en/de "Gift".
+        let english = en([ContentNode::text("Gift")]);
+        let german = Atom::new(
+            LanguageTag::from_string("de-DE").unwrap(),
+            [ContentNode::text("Gift")],
+        );
+        assert_ne!(id_from_atom(&english), id_from_atom(&german));
+    }
+
+    #[test]
+    fn canonical_bytes_matches_the_layout() {
+        let atom = en([
+            ContentNode::text("Click "),
+            ContentNode::placeholder("<g id=1>"),
+            ContentNode::text("here"),
+            ContentNode::placeholder("</g>"),
+        ]);
+
+        let mut expected = vec![SERIALIZATION_VERSION];
+        expected.extend_from_slice(&5u32.to_be_bytes()); // "en-US"
+        expected.extend_from_slice(b"en-US");
+        expected.push(TAG_TEXT);
+        expected.extend_from_slice(&6u32.to_be_bytes());
+        expected.extend_from_slice(b"Click ");
+        expected.push(TAG_PLACEHOLDER); // markup excluded
+        expected.push(TAG_TEXT);
+        expected.extend_from_slice(&4u32.to_be_bytes());
+        expected.extend_from_slice(b"here");
+        expected.push(TAG_PLACEHOLDER);
+
+        assert_eq!(
+            canonical_bytes(atom.language().as_str(), atom.content()),
+            expected
+        );
+    }
+
+    #[test]
+    fn canonical_bytes_of_empty_atom_is_version_plus_language() {
+        let atom = en([]);
+        let mut expected = vec![SERIALIZATION_VERSION];
+        expected.extend_from_slice(&5u32.to_be_bytes());
+        expected.extend_from_slice(b"en-US");
+        assert_eq!(
+            canonical_bytes(atom.language().as_str(), atom.content()),
+            expected
+        );
+    }
+
+    #[test]
+    fn atom_id_round_trips_through_its_digest() {
+        let id = id_from_atom(&en([ContentNode::text("hello")]));
+        assert_eq!(AtomId::from_digest(id.digest()), id);
+    }
+
+    #[test]
+    fn digest_is_32_bytes() {
+        assert_eq!(
+            id_from_atom(&en([ContentNode::text("x")])).digest().len(),
+            32
+        );
+    }
+}
