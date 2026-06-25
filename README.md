@@ -40,8 +40,11 @@ This repo is a Cargo workspace of independently releasable crates:
   parse and emit atoms at the boundary with the outside world. (Phase 2; currently
   a skeleton.)
 
-Decisions and their reasoning live in [`docs/DECISIONS.md`](docs/DECISIONS.md) —
-an append-only log mirroring the observation model it documents.
+New here? [`docs/PHILOSOPHY.md`](docs/PHILOSOPHY.md) lays out the mental model —
+how to think about atoms, identity, and where responsibilities live — and is the
+best starting point for a human or an AI. Decisions and their reasoning live in
+[`docs/DECISIONS.md`](docs/DECISIONS.md), an append-only log mirroring the
+observation model it documents.
 
 ## License
 
