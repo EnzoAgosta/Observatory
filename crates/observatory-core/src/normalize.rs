@@ -221,3 +221,223 @@ pub fn normalize_language_tag(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn collapse_adjacent_merges_adjacent_text() {
+        let out = collapse(
+            &[ContentNode::text("Hello, "), ContentNode::text("world")],
+            CollapseMode::CollapseAdjacent,
+        );
+        assert_eq!(out, [ContentNode::text("Hello, world")]);
+    }
+
+    #[test]
+    fn collapse_adjacent_drops_empty_text() {
+        let out = collapse(
+            &[
+                ContentNode::text(""),
+                ContentNode::text("x"),
+                ContentNode::text(""),
+            ],
+            CollapseMode::CollapseAdjacent,
+        );
+        assert_eq!(out, [ContentNode::text("x")]);
+    }
+
+    #[test]
+    fn collapse_adjacent_keeps_placeholder_after_text() {
+        // Regression: a placeholder following non-empty text must not be dropped.
+        let out = collapse(
+            &[
+                ContentNode::text("a"),
+                ContentNode::placeholder("<x/>"),
+                ContentNode::text("b"),
+            ],
+            CollapseMode::CollapseAdjacent,
+        );
+        assert_eq!(
+            out,
+            [
+                ContentNode::text("a"),
+                ContentNode::placeholder("<x/>"),
+                ContentNode::text("b"),
+            ]
+        );
+    }
+
+    #[test]
+    fn collapse_adjacent_preserves_adjacent_placeholders() {
+        let out = collapse(
+            &[
+                ContentNode::placeholder("<x id=1/>"),
+                ContentNode::placeholder("<x id=2/>"),
+            ],
+            CollapseMode::CollapseAdjacent,
+        );
+        assert_eq!(
+            out,
+            [
+                ContentNode::placeholder("<x id=1/>"),
+                ContentNode::placeholder("<x id=2/>"),
+            ]
+        );
+    }
+
+    #[test]
+    fn drop_empty_removes_empty_text_without_merging() {
+        let out = collapse(
+            &[
+                ContentNode::text("a"),
+                ContentNode::text(""),
+                ContentNode::text("b"),
+            ],
+            CollapseMode::DropEmpty,
+        );
+        // Empty run gone, but the two runs are NOT merged into one.
+        assert_eq!(out, [ContentNode::text("a"), ContentNode::text("b")]);
+    }
+
+    #[test]
+    fn drop_empty_keeps_placeholders_including_empty_ones() {
+        let out = collapse(
+            &[
+                ContentNode::placeholder(""),
+                ContentNode::text(""),
+                ContentNode::text("x"),
+            ],
+            CollapseMode::DropEmpty,
+        );
+        assert_eq!(out, [ContentNode::placeholder(""), ContentNode::text("x")]);
+    }
+
+    #[test]
+    fn trim_outer_leading_trims_first_node_only() {
+        let out = trim_nodes(
+            &[ContentNode::text(" a"), ContentNode::text(" b")],
+            TrimMode::TrimOuterLeading,
+            &[' '],
+        );
+        assert_eq!(out, [ContentNode::text("a"), ContentNode::text(" b")]);
+    }
+
+    #[test]
+    fn trim_outer_trailing_replaces_last_without_growing() {
+        // Regression: must replace the last node in place, not append a copy.
+        let out = trim_nodes(
+            &[
+                ContentNode::text("a "),
+                ContentNode::placeholder("<x/>"),
+                ContentNode::text("b "),
+            ],
+            TrimMode::TrimOuterTrailing,
+            &[' '],
+        );
+        assert_eq!(
+            out,
+            [
+                ContentNode::text("a "),
+                ContentNode::placeholder("<x/>"),
+                ContentNode::text("b"),
+            ]
+        );
+    }
+
+    #[test]
+    fn trim_outer_both_trims_first_leading_and_last_trailing() {
+        let out = trim_nodes(
+            &[
+                ContentNode::text(" a "),
+                ContentNode::placeholder("<x/>"),
+                ContentNode::text(" b "),
+            ],
+            TrimMode::TrimOuterBoth,
+            &[' '],
+        );
+        assert_eq!(
+            out,
+            [
+                ContentNode::text("a "),
+                ContentNode::placeholder("<x/>"),
+                ContentNode::text(" b"),
+            ]
+        );
+    }
+
+    #[test]
+    fn trim_all_both_trims_every_text_run() {
+        let out = trim_nodes(
+            &[ContentNode::text(" a "), ContentNode::text(" b ")],
+            TrimMode::TrimAllBoth,
+            &[' '],
+        );
+        assert_eq!(out, [ContentNode::text("a"), ContentNode::text("b")]);
+    }
+
+    #[test]
+    fn trim_never_touches_placeholders() {
+        let out = trim_nodes(
+            &[ContentNode::placeholder(" <x/> ")],
+            TrimMode::TrimOuterBoth,
+            &[' '],
+        );
+        assert_eq!(out, [ContentNode::placeholder(" <x/> ")]);
+    }
+
+    #[test]
+    fn nfc_composes_text() {
+        // "e" + combining acute → "é".
+        let out = normalize_unicode(
+            &[ContentNode::text("e\u{0301}")],
+            &UnicodeNormalizationProfile::Nfc,
+        );
+        assert_eq!(out, [ContentNode::text("\u{00e9}")]);
+    }
+
+    #[test]
+    fn nfkc_folds_compatibility_characters() {
+        // The "ﬁ" ligature folds to "fi" under NFKC.
+        let out = normalize_unicode(
+            &[ContentNode::text("\u{fb01}le")],
+            &UnicodeNormalizationProfile::Nfkc,
+        );
+        assert_eq!(out, [ContentNode::text("file")]);
+    }
+
+    #[test]
+    fn nfd_decomposes_text() {
+        // "é" → "e" + combining acute.
+        let out = normalize_unicode(
+            &[ContentNode::text("\u{00e9}")],
+            &UnicodeNormalizationProfile::Nfd,
+        );
+        assert_eq!(out, [ContentNode::text("e\u{0301}")]);
+    }
+
+    #[test]
+    fn normalize_unicode_leaves_placeholders_untouched() {
+        // The ligature would fold under NFKC if it were text — but it's markup.
+        let out = normalize_unicode(
+            &[ContentNode::placeholder("\u{fb01}")],
+            &UnicodeNormalizationProfile::Nfkc,
+        );
+        assert_eq!(out, [ContentNode::placeholder("\u{fb01}")]);
+    }
+
+    #[test]
+    fn normalize_language_tag_lowercases() {
+        let tag = LanguageTag::from_string("en-US").unwrap();
+        let out = normalize_language_tag(&tag, &LanguageNormalizationProfile::Lowercase).unwrap();
+        assert_eq!(out.as_str(), "en-us");
+    }
+
+    #[test]
+    fn normalize_language_tag_uppercases() {
+        let tag = LanguageTag::from_string("en-us").unwrap();
+        let out = normalize_language_tag(&tag, &LanguageNormalizationProfile::Uppercase).unwrap();
+        assert_eq!(out.as_str(), "EN-US");
+    }
+}
