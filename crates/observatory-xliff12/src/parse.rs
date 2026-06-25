@@ -283,3 +283,174 @@ impl<'a> XliffSegmentParser<'a> {
         raw
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Parses under `Logical`, asserting success.
+    fn logical(content: &str) -> Vec<ContentNode> {
+        parse_segment(content, EntityMode::Logical).unwrap()
+    }
+
+    /// Parses under `Verbatim`, asserting success.
+    fn verbatim(content: &str) -> Vec<ContentNode> {
+        parse_segment(content, EntityMode::Verbatim).unwrap()
+    }
+
+    fn text(data: &str) -> ContentNode {
+        ContentNode::text(data)
+    }
+
+    fn placeholder(data: &str) -> ContentNode {
+        ContentNode::placeholder(data)
+    }
+
+    #[test]
+    fn empty_input_yields_no_nodes() {
+        assert!(logical("").is_empty());
+    }
+
+    #[test]
+    fn plain_text_is_one_text_node() {
+        assert_eq!(logical("just words"), [text("just words")]);
+    }
+
+    #[test]
+    fn code_content_is_one_opaque_placeholder() {
+        assert_eq!(
+            logical(r#"Click <ph id="1">{0}</ph> here"#),
+            [
+                text("Click "),
+                placeholder(r#"<ph id="1">{0}</ph>"#),
+                text(" here"),
+            ]
+        );
+    }
+
+    #[test]
+    fn paired_code_content_each_captured_whole() {
+        assert_eq!(
+            logical(r#"a<bpt id="1">b</bpt>c<ept id="1">d</ept>e"#),
+            [
+                text("a"),
+                placeholder(r#"<bpt id="1">b</bpt>"#),
+                text("c"),
+                placeholder(r#"<ept id="1">d</ept>"#),
+                text("e"),
+            ]
+        );
+    }
+
+    #[test]
+    fn text_content_keeps_inner_text_tags_as_placeholders() {
+        assert_eq!(
+            logical(r#"<g id="1">x</g>"#),
+            [placeholder(r#"<g id="1">"#), text("x"), placeholder("</g>")]
+        );
+    }
+
+    #[test]
+    fn nested_text_content_with_code_inside() {
+        assert_eq!(
+            logical(r#"<g id="1">a<ph id="1">x</ph>b<g id="2">c</g>d</g>"#),
+            [
+                placeholder(r#"<g id="1">"#),
+                text("a"),
+                placeholder(r#"<ph id="1">x</ph>"#),
+                text("b"),
+                placeholder(r#"<g id="2">"#),
+                text("c"),
+                placeholder("</g>"),
+                text("d"),
+                placeholder("</g>"),
+            ]
+        );
+    }
+
+    #[test]
+    fn empty_element_is_one_placeholder() {
+        assert_eq!(
+            logical("before<x/>after"),
+            [text("before"), placeholder("<x/>"), text("after")]
+        );
+    }
+
+    #[test]
+    fn self_closed_code_element_is_one_placeholder() {
+        assert_eq!(logical(r#"<ph id="1"/>"#), [placeholder(r#"<ph id="1"/>"#)]);
+    }
+
+    #[test]
+    fn logical_decodes_entities_and_merges_runs() {
+        assert_eq!(logical("Tom &amp; Jerry &lt;3"), [text("Tom & Jerry <3")]);
+    }
+
+    #[test]
+    fn verbatim_keeps_entities_raw() {
+        assert_eq!(
+            verbatim("Tom &amp; Jerry &lt;3"),
+            [text("Tom &amp; Jerry &lt;3")]
+        );
+    }
+
+    #[test]
+    fn logical_decodes_numeric_character_references() {
+        assert_eq!(logical("A&#66;C"), [text("ABC")]);
+    }
+
+    #[test]
+    fn entities_inside_placeholders_are_never_decoded() {
+        let raw = r#"a<ph id="1">&amp;</ph>b"#;
+        let expected = [
+            text("a"),
+            placeholder(r#"<ph id="1">&amp;</ph>"#),
+            text("b"),
+        ];
+        assert_eq!(logical(raw), expected);
+        assert_eq!(verbatim(raw), expected);
+    }
+
+    #[test]
+    fn cdata_logical_strips_delimiters_without_unescaping() {
+        // The &amp; inside CDATA is literal — logical only removes the delimiters.
+        assert_eq!(
+            logical("a<![CDATA[b &amp; <c>]]>d"),
+            [text("ab &amp; <c>d")]
+        );
+    }
+
+    #[test]
+    fn cdata_verbatim_keeps_the_section_raw() {
+        assert_eq!(
+            verbatim("a<![CDATA[b &amp; <c>]]>d"),
+            [text("a<![CDATA[b &amp; <c>]]>d")]
+        );
+    }
+
+    #[test]
+    fn unknown_entity_under_logical_errors() {
+        let error = parse_segment("plain &nbsp; text", EntityMode::Logical).unwrap_err();
+        assert!(matches!(error, XliffParseError::UnknownEntity { .. }));
+    }
+
+    #[test]
+    fn unknown_entity_under_verbatim_is_kept_raw() {
+        assert_eq!(verbatim("plain &nbsp; text"), [text("plain &nbsp; text")]);
+    }
+
+    #[test]
+    fn unknown_element_errors() {
+        let error = parse_segment("<foo>x</foo>", EntityMode::Logical).unwrap_err();
+        assert!(matches!(error, XliffParseError::UnknownTag { .. }));
+    }
+
+    #[test]
+    fn comment_errors_loudly() {
+        let error = parse_segment("a<!-- nope -->b", EntityMode::Logical).unwrap_err();
+        assert!(matches!(
+            error,
+            XliffParseError::UnsupportedConstruct { .. }
+        ));
+    }
+}
