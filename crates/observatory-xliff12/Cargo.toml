@@ -1,14 +1,17 @@
 [package]
 name = "observatory-xliff12"
-version = "0.0.1"
+version = "0.1.0"
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 description = "XLIFF 1.2 adapter for observatory-core: parse and emit atoms."
 repository = "https://github.com/EnzoAgosta/Observatory"
 readme = "README.md"
+keywords = ["xliff", "translation", "i18n", "localization", "parser"]
+categories = ["parser-implementations", "internationalization", "localization"]
 
 [dependencies]
-observatory-core = { path = "../observatory-core", version = "0.1.0" }
+observatory-core = { path = "../observatory-core", version = "0.2.0" }
 quick-xml = "0.40.1"
 
 [dev-dependencies]

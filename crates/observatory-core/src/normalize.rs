@@ -1,9 +1,9 @@
 //! Explicit, composable normalization primitives.
 //!
-//! Identity is deliberately dumb (decision D29): it hashes an
-//! [`Atom`](crate::ir::Atom) exactly as recorded. Making "the same" content
-//! compare equal — merging chunks, dropping empty runs, folding Unicode form,
-//! trimming edges, casing a language tag — is therefore the caller's job, and
+//! Identity is deliberately dumb : it hashes an [`Atom`](crate::ir::Atom)
+//! exactly as recorded. Making "the same" content compare equal — merging
+//! chunks, dropping empty runs, folding Unicode form, trimming edges,
+//! casing a language tag — is therefore the caller's job, and
 //! this module is the toolkit for it. Each function is a small, independent
 //! transform with no hidden policy; the caller composes the ones it wants and
 //! feeds the result to [`id_from_atom`](crate::identity::id_from_atom).

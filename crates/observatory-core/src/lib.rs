@@ -22,7 +22,7 @@
 //! Canonicalizing "the same" string across different taggings, chunkings, or
 //! casings is the caller's job: normalize the atom, then hash it. Keeping the id
 //! itself dumb makes it a pure function of the atom and leaves all policy with
-//! the caller (decision D29).
+//! the caller.
 //!
 //! An atom records only *what a string is*, never how it relates to other
 //! strings. Relationships between strings — translations, reviews, and other

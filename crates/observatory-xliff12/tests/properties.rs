@@ -1,4 +1,4 @@
-//! Property-based round-trip fidelity for the XLIFF 1.2 adapter (D26, D9).
+//! Property-based round-trip fidelity for the XLIFF 1.2 adapter.
 //!
 //! A generator builds *valid* inline fragments — text, standard entities, and the
 //! inline elements, nested — and renders them to a string. We then assert the two

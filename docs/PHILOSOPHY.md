@@ -1,9 +1,7 @@
 # Observatory — Philosophy
 
 How to think about this repository. If you are new here — human or AI — read this
-before changing code. The [decision log](DECISIONS.md) records _what_ we decided
-and _why_, decision by decision; this document distills the _mindset_ those
-decisions all flow from, so you can make new choices that fit.
+before changing code.
 
 ## The one idea
 
@@ -23,12 +21,12 @@ Everything below is a corollary of taking that seriously.
 
 The lowest layers do the least thinking possible. An `Atom` is a faithful
 recording of "what is text and what is a placeholder," in order — it does not
-validate, interpret, or rewrite what it is given (D14, D16). `id_from_atom` is a
+validate, interpret, or rewrite what it is given. `id_from_atom` is a
 pure function from an atom to bytes to a hash — it normalizes nothing, decides
-nothing (D29). `LanguageTag` checks only that a tag is well-formed and has a
-region; it does not consult a registry or judge whether a locale is "real" (D7,
-D11, D19). The XLIFF adapter is a stateless codec driven purely by the spec's
-content model — it never interprets ids, pairing, or meaning (D26).
+nothing. `LanguageTag` checks only that a tag is well-formed and has a
+region; it does not consult a registry or judge whether a locale is "real".
+The XLIFF adapter is a stateless codec driven purely by the spec's
+content model — it never interprets ids, pairing, or meaning.
 
 A primitive that has nothing to decide has nothing to get wrong. The surface for
 surprising behavior shrinks to "is the transform faithful and deterministic."
@@ -41,11 +39,10 @@ platform-independent; the hash is still pinned and reproducible. Dumb ≠ sloppy
 ### 2. Identity records what a string _is_; relationships are observations
 
 Feed the identity function only what makes two byte-identical strings _genuinely
-different atoms_ (D5). Language passes that test — `"Gift"` in English and German
+different atoms_. Language passes that test — `"Gift"` in English and German
 are different translatable objects. Direction (source vs. target), domain, client,
 register, recency, review status — all fail it; they are facts _about_ an atom,
-recorded as append-only observations elsewhere, not constitutive _of_ it (D1, D5,
-D22).
+recorded as append-only observations elsewhere, not constitutive _of_ it.
 
 The litmus question for anything you're tempted to put "on" the atom: _would two
 strings with identical bytes and language ever need different identities because
@@ -54,9 +51,9 @@ of this?_ If no, it's an observation a layer up.
 ### 3. Faithful and reversible: record first, derive later
 
 Construction never mutates. `Atom::new` stores exactly the nodes it was given —
-adjacent runs, empty runs, original case — all preserved (D17). Reconstruction is
-a blind, lossless join of every node's data (D16). Placeholders hold the _raw_
-original markup as opaque bytes and are never parsed (D16, D26).
+adjacent runs, empty runs, original case — all preserved. Reconstruction is
+a blind, lossless join of every node's data. Placeholders hold the _raw_
+original markup as opaque bytes and are never parsed.
 
 Identity is then a _derived projection_ over that faithful recording — a
 materialized view, not the source of truth. This is why structural equality
@@ -67,7 +64,7 @@ share an `AtomId` without being `==` (they differ only in placeholder markup).
 ### 4. Identity is pure; normalization is the caller's, and explicit
 
 `id_from_atom(atom)` takes nothing but the atom. The same atom always yields the
-same id — referentially transparent (D29). It does not collapse chunking, fold
+same id — referentially transparent. It does not collapse chunking, fold
 whitespace, or lowercase the language; text, chunking, and language case are all
 significant, byte-for-byte.
 
@@ -93,19 +90,19 @@ predictable building blocks and trusts the caller to assemble them.
 
 The trade is real and chosen: an `AtomId` is only canonical across callers who
 normalize _identically_. That guarantee moves from type-enforced to a shared,
-documented convention (D29). We accept that because the audience is deliberate
+documented convention. We accept that because the audience is deliberate
 callers who want the lever, not end users who want hand-holding.
 
 ### 6. Reproducibility is the bet
 
 A content-addressed id is only valuable if it is **globally reproducible**: the
 same string yields the same id in every deployment, so corpora are shareable and a
-canonical public id exists (D4, D6). That is the entire reason for the choices
-that look conservative — SHA-256 because it reproduces in one line in any language
-(D4); a fixed serialization with an in-band version byte so layouts can never
-silently collide (D18); an explicit edge-trim set and a pinned Unicode version so
-no _ambient_ library behavior leaks into the bytes (D21); a committed lockfile so
-our own builds can't drift (D23).
+canonical public id exists. That is the entire reason for the choices
+that look conservative — SHA-256 because it reproduces in one line in any language;
+a fixed serialization with an in-band version byte so layouts can never
+silently collide; an explicit edge-trim set and a pinned Unicode version so
+no _ambient_ library behavior leaks into the bytes; a committed lockfile so
+our own builds can't drift.
 
 Anything that feeds the hash must be pinned by the spec, not by the environment.
 When in doubt, make it explicit and deterministic.
@@ -114,10 +111,10 @@ When in doubt, make it explicit and deterministic.
 
 Build the dumbest thing that is also _correct_, and let real needs — not imagined
 ones — drive complexity. We deferred the placeholder payload's shape until real
-XLIFF demanded it (D15→D16), stayed a single crate until the adapter justified a
-workspace (D10→D24), and keep the adapter a two-function codec until a real file
-proves it must be smarter (D26). Flexibility that isn't needed yet is a footgun,
-not a feature (D6).
+XLIFF demanded it, stayed a single crate until the adapter justified a
+workspace, and keep the adapter a two-function codec until a real file
+proves it must be smarter. Flexibility that isn't needed yet is a footgun,
+not a feature.
 
 If you're adding a layer, base class, mode, or config knob "for later," stop. Add
 it when "later" arrives with a concrete case.
@@ -125,8 +122,8 @@ it when "later" arrives with a concrete case.
 ### 8. Fail loud
 
 When an input can't be honored, error — never guess. A language tag without a
-region is rejected, not defaulted (D7). An unknown XML entity is a parse error,
-not a silent pass-through (D26). Guessing manufactures false data that is worse
+region is rejected, not defaulted. An unknown XML entity is a parse error,
+not a silent pass-through. Guessing manufactures false data that is worse
 than a clean failure, especially in a system whose whole value is trustworthy
 identity.
 
@@ -147,27 +144,18 @@ Before adding behavior here, ask:
   explicit.
 
 If a feature feels like a special case _on the atom_, it is almost always an
-observation one layer up. That single instinct keeps you aligned with everything
-in the decision log.
+observation one layer up.
 
 ## Vocabulary
 
 - **Atom** — a single-language string recorded as an ordered list of content
-  nodes; the content-addressed unit (D13).
-- **AtomId** — the SHA-256 identity derived from an atom (D4, D29).
+  nodes; the content-addressed unit.
+- **AtomId** — the SHA-256 identity derived from an atom.
 - **ContentNode** — one run of an atom: `Text` (translatable) or `Placeholder`
-  (opaque non-text markup) (D16, D27).
+  (opaque non-text markup).
 - **Placeholder** — opaque raw markup standing in for an inline tag, code, or
-  variable; identity counts its position and presence, never its bytes (D16).
+  variable; identity counts its position and presence, never its bytes.
 - **Observation** — an append-only fact _about_ an atom or _between_ atoms
-  (translation, review, provenance); lives outside this crate (D1, D22).
+  (translation, review, provenance); lives outside this crate.
 - **Normalization** — caller-applied, composable transforms that canonicalize
-  content before hashing; never automatic (D29).
-
-## How we evolve
-
-Decisions are recorded in [`DECISIONS.md`](DECISIONS.md), **append-only**: a
-choice is never edited once accepted; when we change our minds we add a
-superseding decision and mark the old one. Read the log to understand _why_
-something is the way it is before changing it — most "why is this so minimal?"
-questions are answered there, deliberately.
+  content before hashing; never automatic.

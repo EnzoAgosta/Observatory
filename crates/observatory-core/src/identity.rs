@@ -2,8 +2,8 @@
 //!
 //! The id is a SHA-256 digest over a canonical, length-prefixed serialization of
 //! the atom *exactly as recorded* — its language tag (verbatim) and its content
-//! nodes. Identity is deliberately dumb (decision D29): it performs no
-//! normalization and no structural collapse, so text, chunking, and language case
+//! nodes. Identity is deliberately dumb: it performs no normalization 
+//! and no structural collapse, so text, chunking, and language case
 //! are all significant. The one thing it excludes is placeholder *markup* — a
 //! placeholder contributes only its presence and position, never its bytes — so
 //! the same text tagged two different ways still shares an id.
@@ -179,7 +179,7 @@ mod tests {
 
     #[test]
     fn text_chunking_changes_the_id() {
-        // D29: identity does not collapse, so how text is split is significant.
+        // identity does not collapse, so how text is split is significant.
         let merged = en([ContentNode::text("ab")]);
         let split = en([ContentNode::text("a"), ContentNode::text("b")]);
         assert_ne!(id_from_atom(&merged), id_from_atom(&split));
@@ -194,7 +194,7 @@ mod tests {
 
     #[test]
     fn surrounding_whitespace_changes_the_id() {
-        // D29: identity does not trim or fold whitespace.
+        // identity does not trim or fold whitespace.
         assert_ne!(
             id_from_atom(&en([ContentNode::text(" hi ")])),
             id_from_atom(&en([ContentNode::text("hi")])),
@@ -203,7 +203,7 @@ mod tests {
 
     #[test]
     fn language_case_changes_the_id() {
-        // D29: the tag is serialized verbatim, so case is significant.
+        // the tag is serialized verbatim, so case is significant.
         let upper = en([ContentNode::text("hi")]);
         let lower = Atom::new(
             LanguageTag::from_string("en-us").unwrap(),

@@ -12,7 +12,7 @@ It does exactly two things:
 That is the whole crate. It builds no document model, validates no document,
 walks no `<file>` / `<trans-unit>` structure, and records no relationships
 between strings. Assembling the `Atom` (with the language the caller tracks — it
-lives a level up, on the `<file>` element), deciding *which* fragment becomes an
+lives a level up, on the `<file>` element), deciding _which_ fragment becomes an
 atom, normalizing it, and how atoms relate are all the caller's job; this crate
 is the boundary primitive those higher layers rest on.
 
@@ -30,15 +30,15 @@ A fragment is tokenized into the two kinds of content node an `Atom` is made of 
 **text** and opaque **placeholder** — by a single rule: what the XLIFF 1.2 spec
 says an element's content is.
 
-| XLIFF 1.2 element                     | Spec content      | Recorded as                                              |
-| ------------------------------------- | ----------------- | ------------------------------------------------------- |
-| `<bpt>` `<ept>` `<ph>` `<it>`         | native code       | the whole element → one opaque placeholder              |
-| `<g>` `<mrk>`                         | translatable text | open and close tags → placeholders; inner text kept     |
-| `<x/>` `<bx/>` `<ex/>`                | empty             | one placeholder                                          |
-| (character data)                      | text              | a text node                                              |
+| XLIFF 1.2 element             | Spec content      | Recorded as                                         |
+| ----------------------------- | ----------------- | --------------------------------------------------- |
+| `<bpt>` `<ept>` `<ph>` `<it>` | native code       | the whole element → one opaque placeholder          |
+| `<g>` `<mrk>`                 | translatable text | open and close tags → placeholders; inner text kept |
+| `<x/>` `<bx/>` `<ex/>`        | empty             | one placeholder                                     |
+| (character data)              | text              | a text node                                         |
 
-In short: if the spec says an element's content is *code*, the whole element is
-hidden away as one placeholder; if it says *text*, the tags are recorded as
+In short: if the spec says an element's content is _code_, the whole element is
+hidden away as one placeholder; if it says _text_, the tags are recorded as
 placeholders and the text between them is kept. A placeholder stores the element's
 **raw markup**, exactly as it appeared (attribute order and quoting included), and
 that markup is never interpreted — so a `<sub>` nested inside native code is
@@ -52,12 +52,12 @@ How XML entities in text are treated is the `EntityMode`, and it must be the
 same on both sides of a round-trip:
 
 - **Logical** (the default): text is unescaped to its Unicode form on parse and
-  re-escaped on emit. A round-trip is *content-identical* — fragments that differ
+  re-escaped on emit. A round-trip is _content-identical_ — fragments that differ
   only in how a character was escaped (`&amp;`, `&#38;`, `&#x26;`) collapse to the
   same atom, which is what lets the same content produce the same identity
   everywhere.
 - **Verbatim**: text is kept exactly as written, entities and all. A round-trip is
-  *byte-identical*, at the cost of identity then depending on the original
+  _byte-identical_, at the cost of identity then depending on the original
   escaping.
 
 CDATA sections are character data and follow the same mode — kept raw under
@@ -103,9 +103,6 @@ These are deliberately left to the caller or to later work, not silently done:
   (tags marked, text kept); whether they should affect identity is still open.
 - **Whole-document concerns** — file structure, validation, the source↔target
   relationship — live above this crate.
-
-The reasoning behind these choices is recorded in the repository's
-[`docs/DECISIONS.md`](../../docs/DECISIONS.md).
 
 ## License
 
