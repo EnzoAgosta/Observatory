@@ -756,6 +756,7 @@ name = "observatory-store"
 version = "0.1.0"
 dependencies = [
  "arrow",
+ "observatory-core",
 ]
 
 [[package]]

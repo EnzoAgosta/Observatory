@@ -314,3 +314,11 @@ Intermediate commits need not compile (history is cleaned with `jj` at the end).
   it.
 - DuckDB read path and which integration (extension vs. Arrow handoff) —
   increment 4.
+- **Backend split into `observatory-arrow` + `observatory-lance`.** The
+  domain↔Arrow mapping (`schema` / `encode` / `decode`) depends only on `arrow`;
+  Lance enters only at the store types. That seam is kept as an internal *module*
+  boundary now — the arrow-mapping modules never import `lance` — so extracting two
+  crates later is a near-mechanical refactor, done only if a real second backend
+  (e.g. `observatory-parquet`) is ever wanted. **Lance is the first-class citizen:**
+  the shared schema deliberately targets what Lance can store (the `Union`
+  rejection is precisely this), so any future backend must support at least that.

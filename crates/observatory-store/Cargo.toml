@@ -9,3 +9,4 @@ repository = "https://github.com/EnzoAgosta/Observatory"
 
 [dependencies]
 arrow = "58"
+observatory-core = { version = "0.2.0", path = "../observatory-core" }
