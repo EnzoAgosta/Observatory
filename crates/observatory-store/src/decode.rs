@@ -8,7 +8,7 @@ use crate::schema::{
     NODE_KIND_TEXT,
 };
 
-pub(crate) fn decode_atoms(batch: &RecordBatch) -> Result<Vec<Atom>> {
+pub fn decode_atoms(batch: &RecordBatch) -> Result<Vec<Atom>> {
     let languages = column::<StringArray>(batch, LANGUAGE_COLUMN)?;
     let contents = column::<ListArray>(batch, CONTENT_NODES)?;
 

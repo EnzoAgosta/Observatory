@@ -11,3 +11,7 @@ mod decode;
 mod encode;
 mod error;
 mod schema;
+
+pub use crate::decode::decode_atoms;
+pub use crate::encode::encode_atoms;
+pub use crate::error::{Result, StoreError};

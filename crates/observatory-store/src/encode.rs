@@ -12,7 +12,7 @@ use crate::schema::{
     ATOM_ID_WIDTH, NODE, NODE_KIND_PLACEHOLDER, NODE_KIND_TEXT, atoms_schema, content_node_fields,
 };
 
-pub(crate) fn encode_atoms(atoms: &[Atom]) -> RecordBatch {
+pub fn encode_atoms(atoms: &[Atom]) -> RecordBatch {
     let mut ids = FixedSizeBinaryBuilder::new(ATOM_ID_WIDTH);
     let mut languages = StringBuilder::new();
 

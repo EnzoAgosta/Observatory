@@ -3,7 +3,7 @@ use std::fmt;
 use observatory_core::ir::LanguageTagError;
 
 #[derive(Debug)]
-pub(crate) enum StoreError {
+pub enum StoreError {
     SchemaMismatch(String),
     InvalidLanguageTag(LanguageTagError),
     UnknownNodeKind(String),
@@ -31,4 +31,4 @@ impl From<LanguageTagError> for StoreError {
     }
 }
 
-pub(crate) type Result<T> = std::result::Result<T, StoreError>;
+pub type Result<T> = std::result::Result<T, StoreError>;
