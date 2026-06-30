@@ -1,3 +1,11 @@
+//! Encoding atoms into an Arrow `RecordBatch` shaped like the atoms `schema`.
+//!
+//! Pure and infallible: it is handed already-valid `Atom`s and computes each
+//! `AtomId` itself, so nothing here can fail — the `expect`s document invariants
+//! that hold by construction (a digest is always 32 bytes; the field builders are
+//! the types we just built). Batch-first: one call produces one `RecordBatch`
+//! (one Lance commit, later), never a per-item write — see `DESIGN.md`.
+
 use std::sync::Arc;
 
 use arrow::array::{
@@ -12,6 +20,8 @@ use crate::schema::{
     ATOM_ID_WIDTH, NODE, NODE_KIND_PLACEHOLDER, NODE_KIND_TEXT, atoms_schema, content_node_fields,
 };
 
+/// Encodes `atoms` into a single `RecordBatch` matching the atoms schema. Each
+/// atom's `AtomId` is derived here, never taken from the caller.
 pub fn encode_atoms(atoms: &[Atom]) -> RecordBatch {
     let mut ids = FixedSizeBinaryBuilder::new(ATOM_ID_WIDTH);
     let mut languages = StringBuilder::new();
@@ -38,6 +48,8 @@ pub fn encode_atoms(atoms: &[Atom]) -> RecordBatch {
         .expect("encoded arrays match the atoms schema by construction")
 }
 
+/// Appends one atom across all three column builders in lockstep — its id, its
+/// language, and its content nodes — so a partially-written atom is impossible.
 fn encode_atom(
     atom: &Atom,
     ids: &mut FixedSizeBinaryBuilder,

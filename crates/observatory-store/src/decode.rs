@@ -1,3 +1,12 @@
+//! Decoding an atoms `RecordBatch` back into `Atom`s.
+//!
+//! This is the trust boundary: it reads data that may be malformed (a foreign or
+//! corrupt dataset), so unlike `encode` it is fallible and returns `StoreError`.
+//! Concrete arrays are recovered from the type-erased columns with
+//! `as_any().downcast_ref()` — a checked, runtime cast — and a missing or
+//! wrong-typed column, an unknown `node_kind`, or an invalid language tag each
+//! become a `StoreError` rather than a panic.
+
 use arrow::array::{Array, ArrayRef, ListArray, RecordBatch, StringArray, StructArray};
 
 use observatory_core::ir::{Atom, ContentNode, LanguageTag};
@@ -8,6 +17,9 @@ use crate::schema::{
     NODE_KIND_TEXT,
 };
 
+/// Reconstructs every atom in `batch` by reading `column[row]` across the
+/// columns. Errors if a column is missing or mistyped, a stored language tag is
+/// invalid, or a node carries an unknown `node_kind`.
 pub fn decode_atoms(batch: &RecordBatch) -> Result<Vec<Atom>> {
     let languages = column::<StringArray>(batch, LANGUAGE_COLUMN)?;
     let contents = column::<ListArray>(batch, CONTENT_NODES)?;
@@ -21,6 +33,8 @@ pub fn decode_atoms(batch: &RecordBatch) -> Result<Vec<Atom>> {
     Ok(atoms)
 }
 
+/// Decodes one list element — the struct rows for a single atom — into its
+/// content nodes.
 fn decode_content(nodes: &ArrayRef) -> Result<Vec<ContentNode>> {
     let structs = as_array::<StructArray>(nodes, "content element")?;
     let kinds = struct_field::<StringArray>(structs, NODE_KIND_FIELD)?;
@@ -39,6 +53,7 @@ fn decode_content(nodes: &ArrayRef) -> Result<Vec<ContentNode>> {
     Ok(decoded)
 }
 
+/// Fetches column `name` from `batch` and downcasts it to `T`, or `SchemaMismatch`.
 fn column<'a, T: Array + 'static>(batch: &'a RecordBatch, name: &str) -> Result<&'a T> {
     let array = batch
         .column_by_name(name)
@@ -46,6 +61,7 @@ fn column<'a, T: Array + 'static>(batch: &'a RecordBatch, name: &str) -> Result<
     as_array(array, name)
 }
 
+/// Like `column`, but fetches field `name` from a struct array's children.
 fn struct_field<'a, T: Array + 'static>(structs: &'a StructArray, name: &str) -> Result<&'a T> {
     let array = structs
         .column_by_name(name)
@@ -53,6 +69,7 @@ fn struct_field<'a, T: Array + 'static>(structs: &'a StructArray, name: &str) ->
     as_array(array, name)
 }
 
+/// Runtime downcast of a type-erased array to the concrete `T`, or `SchemaMismatch`.
 fn as_array<'a, T: Array + 'static>(array: &'a ArrayRef, what: &str) -> Result<&'a T> {
     array
         .as_any()
