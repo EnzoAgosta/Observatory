@@ -4,13 +4,13 @@ use observatory_core::ir::{Atom, ContentNode, LanguageTag};
 
 use crate::error::{Result, StoreError};
 use crate::schema::{
-    CONTENT_COLUMN, LANGUAGE_COLUMN, NODE_DATA_FIELD, NODE_KIND_FIELD, NODE_KIND_PLACEHOLDER,
+    CONTENT_NODES, LANGUAGE_COLUMN, NODE_DATA_FIELD, NODE_KIND_FIELD, NODE_KIND_PLACEHOLDER,
     NODE_KIND_TEXT,
 };
 
 pub(crate) fn decode_atoms(batch: &RecordBatch) -> Result<Vec<Atom>> {
     let languages = column::<StringArray>(batch, LANGUAGE_COLUMN)?;
-    let contents = column::<ListArray>(batch, CONTENT_COLUMN)?;
+    let contents = column::<ListArray>(batch, CONTENT_NODES)?;
 
     let mut atoms = Vec::with_capacity(batch.num_rows());
     for row in 0..batch.num_rows() {

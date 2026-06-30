@@ -6,9 +6,9 @@ pub(crate) const ATOM_ID_WIDTH: i32 = 32;
 
 pub(crate) const ATOM_ID_COLUMN: &str = "atom_id";
 pub(crate) const LANGUAGE_COLUMN: &str = "language";
-pub(crate) const CONTENT_COLUMN: &str = "content";
+pub(crate) const CONTENT_NODES: &str = "content";
 
-pub(crate) const CONTENT_ITEM: &str = "item";
+pub(crate) const NODE: &str = "node";
 pub(crate) const NODE_KIND_FIELD: &str = "node_kind";
 pub(crate) const NODE_DATA_FIELD: &str = "data";
 
@@ -23,7 +23,7 @@ pub(crate) fn content_node_fields() -> Fields {
 }
 
 pub(crate) fn atoms_schema() -> SchemaRef {
-    let content_element = Field::new(CONTENT_ITEM, DataType::Struct(content_node_fields()), false);
+    let node_field = Field::new(NODE, DataType::Struct(content_node_fields()), false);
     Arc::new(Schema::new(vec![
         Field::new(
             ATOM_ID_COLUMN,
@@ -31,10 +31,6 @@ pub(crate) fn atoms_schema() -> SchemaRef {
             false,
         ),
         Field::new(LANGUAGE_COLUMN, DataType::Utf8, false),
-        Field::new(
-            CONTENT_COLUMN,
-            DataType::List(Arc::new(content_element)),
-            false,
-        ),
+        Field::new(CONTENT_NODES, DataType::List(Arc::new(node_field)), false),
     ]))
 }
