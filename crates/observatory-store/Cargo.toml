@@ -1,0 +1,11 @@
+[package]
+name = "observatory-store"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Lance-backed persistence for observatory atoms and observations."
+repository = "https://github.com/EnzoAgosta/Observatory"
+
+[dependencies]
+arrow = "58"
