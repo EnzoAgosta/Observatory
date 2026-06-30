@@ -54,3 +54,35 @@ impl fmt::Display for KindError {
 }
 
 impl std::error::Error for KindError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn accepts_a_label_and_stores_it_verbatim() {
+        let kind = Kind::new("translation_of").unwrap();
+        assert_eq!(kind.as_str(), "translation_of");
+    }
+
+    #[test]
+    fn preserves_case_and_whitespace_in_the_label() {
+        let kind = Kind::new(" Translation_Of ").unwrap();
+        assert_eq!(kind.as_str(), " Translation_Of ");
+    }
+
+    #[test]
+    fn rejects_an_empty_label() {
+        assert!(matches!(Kind::new(""), Err(KindError::Empty)));
+    }
+
+    #[test]
+    fn rejects_a_whitespace_only_label() {
+        assert!(matches!(Kind::new("   "), Err(KindError::Empty)));
+    }
+
+    #[test]
+    fn empty_error_displays_a_reason() {
+        assert!(KindError::Empty.to_string().contains("must not be empty"));
+    }
+}

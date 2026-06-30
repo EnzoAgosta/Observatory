@@ -138,3 +138,114 @@ impl Observation {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use observatory_core::identity::id_from_atom;
+    use observatory_core::ir::{Atom, ContentNode, LanguageTag};
+    use serde_json::json;
+
+    fn atom(lang: &str, text: &str) -> AtomId {
+        id_from_atom(&Atom::new(
+            LanguageTag::from_string(lang).unwrap(),
+            [ContentNode::text(text)],
+        ))
+    }
+
+    fn kind(label: &str) -> Kind {
+        Kind::new(label).unwrap()
+    }
+
+    fn id() -> ObservationId {
+        ObservationId::from_bytes([0u8; 16])
+    }
+
+    #[test]
+    fn property_keys_to_a_single_subject() {
+        let subject = atom("en-US", "Hello");
+        let obs = Observation::property(
+            id(),
+            kind("blacklisted"),
+            subject,
+            SystemTime::UNIX_EPOCH,
+            None,
+            json!({ "reason": "offensive" }),
+        );
+        assert_eq!(obs.subjects(), &[subject]);
+        assert_eq!(obs.kind().as_str(), "blacklisted");
+    }
+
+    #[test]
+    fn relationship_keeps_its_subjects_in_order() {
+        let fr = atom("fr-FR", "Bonjour");
+        let en = atom("en-US", "Hello");
+        let obs = Observation::relationship(
+            id(),
+            kind("translation"),
+            vec![fr, en],
+            SystemTime::UNIX_EPOCH,
+            None,
+            Value::Null,
+        );
+        assert_eq!(obs.subjects(), &[fr, en]);
+    }
+
+    #[test]
+    fn relationship_records_any_number_of_subjects_faithfully() {
+        // Arity is not policed: a one-subject relationship is recorded as given.
+        let only = atom("en-US", "lonely");
+        let obs = Observation::relationship(
+            id(),
+            kind("interchangeable"),
+            vec![only],
+            SystemTime::UNIX_EPOCH,
+            None,
+            Value::Null,
+        );
+        assert_eq!(obs.subjects(), &[only]);
+    }
+
+    #[test]
+    fn effective_at_defaults_to_recorded_at() {
+        let obs = Observation::property(
+            id(),
+            kind("approved_by"),
+            atom("en-US", "Hello"),
+            SystemTime::UNIX_EPOCH,
+            None,
+            Value::Null,
+        );
+        assert_eq!(obs.effective_at(), obs.recorded_at());
+    }
+
+    #[test]
+    fn effective_at_can_differ_from_recorded_at_for_backfilled_facts() {
+        let effective = SystemTime::UNIX_EPOCH;
+        let recorded = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1);
+        let obs = Observation::property(
+            id(),
+            kind("approved_by"),
+            atom("en-US", "Hello"),
+            recorded,
+            Some(effective),
+            Value::Null,
+        );
+        assert_eq!(obs.recorded_at(), recorded);
+        assert_eq!(obs.effective_at(), effective);
+        assert_ne!(obs.effective_at(), obs.recorded_at());
+    }
+
+    #[test]
+    fn payload_is_preserved() {
+        let payload = json!({ "confidence": 0.91, "author": "deepl:v2" });
+        let obs = Observation::relationship(
+            id(),
+            kind("translation"),
+            vec![atom("fr-FR", "Bonjour"), atom("en-US", "Hello")],
+            SystemTime::UNIX_EPOCH,
+            None,
+            payload.clone(),
+        );
+        assert_eq!(obs.payload(), &payload);
+    }
+}

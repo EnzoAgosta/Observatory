@@ -30,3 +30,22 @@ impl ObservationId {
         self.0
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn round_trips_through_its_bytes() {
+        let raw = [7u8; 16];
+        assert_eq!(ObservationId::from_bytes(raw).bytes(), raw);
+    }
+
+    #[test]
+    fn distinct_bytes_are_distinct_ids() {
+        assert_ne!(
+            ObservationId::from_bytes([0u8; 16]),
+            ObservationId::from_bytes([1u8; 16]),
+        );
+    }
+}
