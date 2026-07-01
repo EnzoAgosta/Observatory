@@ -33,7 +33,7 @@ pub fn encode_atoms(atoms: &[Atom]) -> RecordBatch {
 
     let node_field = Arc::new(Field::new(
         NODE,
-        DataType::Struct(content_node_fields()),  
+        DataType::Struct(content_node_fields()),
         false,
     ));
     let struct_builder = StructBuilder::from_fields(content_node_fields(), 0);
@@ -79,7 +79,8 @@ fn encode_atom(
     content_column: &mut ListBuilder<StructBuilder>,
 ) {
     let id = id_from_atom(atom);
-    atom_id_column.append_value(id.digest())
+    atom_id_column
+        .append_value(id.digest())
         .expect("an AtomId digest is exactly DIGEST_WIDTH bytes");
     row_digest_column
         .append_value(digest)
