@@ -17,28 +17,56 @@ the source of truth, and everything else (the TM view, review state, reachabilit
 queries) is a read model built on top. "Derive the old TM from this model, but
 never the reverse" is the bet.
 
-## Storage shape
-
-- **Lance** is the single storage substrate: atoms, embeddings, and the
-  observation log all live as Lance tables. Columnar scans, random access, and
-  built-in vector indexes cover the dominant translation workloads in one engine.
-- **DuckDB** is a query engine over that data, not a store. It handles the 1–2
-  hop joins and filtered scans that make up the common case (e.g. "all
-  translations of this string approved by a human and not blacklisted, as of ≤3
-  months ago").
-- **The graph is a derived view**, not a store of record. A recursive graph engine
-  is only revisited if a concrete query proves unserveable by Lance + DuckDB.
-
 ## Repository layout
 
 This repo is a Cargo workspace of independently releasable crates:
 
-- **[`observatory-core`](crates/observatory-core/)** — the normalization engine:
-  the atom IR, content-addressed `AtomId`, and normalization. The foundation
-  everything else rests on.
-- **[`observatory-xliff12`](crates/observatory-xliff12/)** — the XLIFF 1.2 adapter:
-  parse and emit atoms at the boundary with the outside world. (Phase 2; currently
-  a skeleton.)
+- **[`observatory-core`](crates/observatory-core/)** — the normalization core: the
+  atom IR, content-addressed `AtomId`, and normalization primitives. The
+  foundation everything else rests on. *Implemented.*
+- **[`observatory-observations`](crates/observatory-observations/)** — the
+  append-only observation model: properties and relationships over atoms,
+  bitemporal, with an open user-defined `Kind` and a JSON payload. *Implemented.*
+- **[`observatory-xliff12`](crates/observatory-xliff12/)** — the XLIFF 1.2 boundary
+  codec: parse and emit the content nodes of a `<source>`/`<target>` fragment,
+  with configurable entity handling. *Implemented* (segment-level; whole-document
+  structure is deliberately out of scope).
+- **[`observatory-store`](crates/observatory-store/)** — Lance-backed persistence.
+  Atom storage — create/open, dedup-on-write upsert, lookup by id — is implemented
+  and tested against real on-disk datasets; observation storage, scalar indexes,
+  and the query path are next. See its
+  [`DESIGN.md`](crates/observatory-store/DESIGN.md). *In progress.*
+
+## Storage architecture
+
+The intended shape, and where it stands:
+
+- **Lance** is the storage substrate. Atoms are persisted today as a
+  content-addressed Lance dataset that dedups byte-identical writes; the
+  observation log will live alongside them, and Lance's built-in vector indexes
+  are the intended home for embeddings later. A Lance dataset is an immutable,
+  versioned directory — every write is a new version, like a git commit.
+- **DuckDB** *(planned, not yet wired up)* will be a query engine over that Lance
+  data, not a second store — for the 1–2 hop joins and filtered scans that make up
+  the common case (e.g. "all translations of this string approved by a human and
+  not blacklisted, as of ≤3 months ago").
+- **The graph is a derived view** *(aspirational)*, never a store of record. A
+  recursive graph engine is revisited only if a concrete query proves unserveable
+  by Lance + DuckDB.
+
+## Status
+
+Implemented today: the domain model end to end — atoms, identity, and
+normalization (`observatory-core`) and the observation model
+(`observatory-observations`) — the XLIFF 1.2 segment codec
+(`observatory-xliff12`), and **atom persistence** on Lance
+(`observatory-store`): write-with-dedup and lookup by id, tested against real
+on-disk datasets.
+
+Next, roughly in order: observation persistence, scalar indexes and Lance
+maintenance (compaction, version cleanup), then the DuckDB query path. Embeddings
+and vector search, further format adapters (XLIFF dialects, TMX), and any graph
+view are further out.
 
 New here? [`docs/PHILOSOPHY.md`](docs/PHILOSOPHY.md) lays out the mental model —
 how to think about atoms, identity, and where responsibilities live — and is the
