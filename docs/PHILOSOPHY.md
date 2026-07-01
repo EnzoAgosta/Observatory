@@ -59,7 +59,11 @@ Identity is then a _derived projection_ over that faithful recording — a
 materialized view, not the source of truth. This is why structural equality
 (`==`) and identity (`AtomId`) are deliberately different relations: two atoms can
 share an `AtomId` without being `==` (they differ only in placeholder markup).
-**Always dedup and compare by `AtomId`, never by `==`.**
+**For equivalence — "the same translatable unit?" — compare and match by
+`AtomId`, never by `==`.** The two relations answer different questions, though: a
+layer that must preserve every _distinct recording_ — the persistence store —
+dedups by exact structural identity instead, precisely so two atoms that share an
+`AtomId` but differ in markup are both kept.
 
 ### 4. Identity is pure; normalization is the caller's, and explicit
 
