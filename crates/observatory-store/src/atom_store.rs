@@ -16,10 +16,13 @@ use std::sync::Arc;
 use arrow::array::{RecordBatch, RecordBatchIterator};
 use arrow::error::ArrowError;
 use lance::Dataset;
-use lance::dataset::{WriteMode, WriteParams};
+use lance::dataset::{MergeInsertBuilder, WhenMatched, WhenNotMatched, WriteMode, WriteParams};
 
+use observatory_core::ir::Atom;
+
+use crate::encode::encode_atoms;
 use crate::error::Result;
-use crate::schema::atoms_schema;
+use crate::schema::{ROW_DIGEST_COLUMN, atoms_schema};
 
 /// A handle to the atoms dataset at one version. Cloning the inner `Arc` is cheap;
 /// the whole point is that many readers can share one open dataset.
@@ -51,5 +54,32 @@ impl AtomStore {
         Ok(Self {
             dataset: Arc::new(dataset),
         })
+    }
+
+    /// Stores `atoms`, deriving each key itself and upserting by exact identity
+    /// (`row_digest`): an atom already present byte-for-byte is left untouched, so
+    /// the call is idempotent, while a genuine variant is inserted. One call is one
+    /// Lance commit. Passing no atoms is a no-op that writes no new version.
+    pub async fn put_atoms(&mut self, atoms: &[Atom]) -> Result<()> {
+        if atoms.is_empty() {
+            return Ok(());
+        }
+
+        let batch = encode_atoms(atoms);
+        let schema = batch.schema();
+        let reader = RecordBatchIterator::new([Ok(batch)], schema);
+
+        let mut builder = MergeInsertBuilder::try_new(
+            Arc::clone(&self.dataset),
+            vec![ROW_DIGEST_COLUMN.to_string()],
+        )?;
+        builder
+            .when_matched(WhenMatched::DoNothing)
+            .when_not_matched(WhenNotMatched::InsertAll);
+        let job = builder.try_build()?;
+
+        let (dataset, _stats) = job.execute_reader(reader).await?;
+        self.dataset = dataset;
+        Ok(())
     }
 }
