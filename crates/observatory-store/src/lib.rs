@@ -17,3 +17,9 @@ pub use crate::atom_store::AtomStore;
 pub use crate::decode::decode_atoms;
 pub use crate::encode::encode_atoms;
 pub use crate::error::{Result, StoreError};
+
+/// Compiles the code examples in the crate README as doc-tests, so they can't
+/// drift from the real API. Exists only during doc-test collection.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+pub struct ReadmeDocTests;
