@@ -2,7 +2,7 @@
 //!
 //! The id is a SHA-256 digest over a canonical, length-prefixed serialization of
 //! the atom *exactly as recorded* — its language tag (verbatim) and its content
-//! nodes. Identity is deliberately dumb: it performs no normalization 
+//! nodes. Identity is deliberately dumb: it performs no normalization
 //! and no structural collapse, so text, chunking, and language case
 //! are all significant. The one thing it excludes is placeholder *markup* — a
 //! placeholder contributes only its presence and position, never its bytes — so
