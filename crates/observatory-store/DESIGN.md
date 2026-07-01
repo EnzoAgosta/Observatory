@@ -70,14 +70,14 @@ siblings under a shared root:
   observations.lance/   # ObservationStore's dataset   (increment 2)
 ```
 
-The sibling-under-root layout is a *convention* (a caller opens both under one
+The sibling-under-root layout is a _convention_ (a caller opens both under one
 root), not a coupling enforced by the types. The two tables never join at the
 storage layer; joins are the query engine's job.
 
 ## Two stores, and the handle model
 
 The crate exposes **two independent store types** — `AtomStore` and
-`ObservationStore` — each wrapping exactly one Lance dataset. They are *not*
+`ObservationStore` — each wrapping exactly one Lance dataset. They are _not_
 bundled into one struct, for two reasons:
 
 - **No combined transaction to protect.** Lance versions each dataset
@@ -86,7 +86,7 @@ bundled into one struct, for two reasons:
   no invariant that two structs cannot, so the coupling buys nothing.
 - **Borrow independence.** Both designs hold two `Arc<Dataset>`; the question is
   one struct or two. In one combined `Store`, a writer's `&mut self` borrows the
-  *whole* struct, so you could not read observations while a write to atoms is
+  _whole_ struct, so you could not read observations while a write to atoms is
   borrowed. As two structs, `&mut atom_store` and `&observation_store` are
   independent borrows — concurrent atom-write + observation-read just works, which
   the async, concurrent workload wants.
@@ -98,7 +98,7 @@ private helpers so nothing is duplicated. A thin facade that opens both under on
 root could sit on top later if a caller wants one-call open — YAGNI now.
 
 **The handle model (identical in both stores).** A Lance dataset is an immutable
-versioned snapshot; a write returns a *new version's handle* rather than mutating
+versioned snapshot; a write returns a _new version's handle_ rather than mutating
 in place. Lance hands these out as `Arc<Dataset>` (a cheap, shareable,
 reference-counted handle) because one dataset may be read by many concurrent
 tasks. So each store:
@@ -107,7 +107,7 @@ tasks. So each store:
 - **readers borrow `&self`** (`get_atom`, `observations_about`, …) and can run
   concurrently;
 - **writers borrow `&mut self`** (`put_atoms`, `put_observations`): the write runs
-  `merge_insert`/append, gets back the *new* version's `Arc<Dataset>`, and **swaps
+  `merge_insert`/append, gets back the _new_ version's `Arc<Dataset>`, and **swaps
   it into the field** — reassigning needs the exclusive `&mut` borrow. Holding
   `Arc<Dataset>` (not a bare `Dataset`) is deliberate: `merge_insert` both takes
   and returns an `Arc<Dataset>`, so the field type matches its currency and no
@@ -155,11 +155,12 @@ is a design commitment from day one even though the tuning is deferred:
 
 Schema:
 
-| column     | Arrow type                                  | notes                                |
-|------------|---------------------------------------------|--------------------------------------|
-| `atom_id`  | `FixedSizeBinary(32)`                       | the SHA-256 digest; the key. BTREE (deferred). |
-| `language` | `Utf8`                                      | the BCP-47 tag, verbatim. Lance auto-dictionary-encodes low-cardinality values; no Arrow `Dictionary` type needed. |
-| `content`  | `List<Struct<node_kind: Utf8, data: Utf8>>` | the atom's content nodes, in order.  |
+| column       | Arrow type                                  | notes                                                                                                              |
+| ------------ | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `atom_id`    | `FixedSizeBinary(32)`                       | the SHA-256 _matching_ key; lossy (excludes placeholder markup), so **not unique**. BTREE (deferred).              |
+| `row_digest` | `FixedSizeBinary(32)`                       | the SHA-256 _exact_ key over the full atom incl. markup; the dedup/upsert key. Internal — never exposed.           |
+| `language`   | `Utf8`                                      | the BCP-47 tag, verbatim. Lance auto-dictionary-encodes low-cardinality values; no Arrow `Dictionary` type needed. |
+| `content`    | `List<Struct<node_kind: Utf8, data: Utf8>>` | the atom's content nodes, in order.                                                                                |
 
 **The `content` shape, and why it is what it is.** A stored atom must round-trip
 to the exact `Vec<ContentNode>`, because the variant matters: re-deriving the
@@ -178,33 +179,53 @@ itself (no "what does `true` mean" boolean blindness), and DuckDB reads it
 natively. Encode maps the enum to the tag; decode maps the tag back, and an
 unrecognized tag is a `StoreError` (a foreign/corrupt row), never a panic.
 
-**Identity is the store's to compute.** `put_atoms` takes plain `Atom`s and
-derives each `AtomId` via `observatory_core::identity::id_from_atom`. Callers
-never supply the key, so a row's key cannot disagree with its content.
+**Two keys, two jobs.** The store derives _both_ keys itself from the atom's
+content (`put_atoms` takes plain `Atom`s; callers never supply a key, so a row's
+keys cannot disagree with its content):
+
+- **`atom_id`** — `observatory_core::identity::id_from_atom`, the _matching_ key. It
+  deliberately excludes placeholder markup (a `Placeholder` hashes as a bare tag),
+  so two atoms differing only in markup — `click <ph/>here` vs `click <bpt/>here` —
+  share an `atom_id`. It is therefore **lossy and non-unique**, and it is the key
+  observations reference and that TM matching will use.
+- **`row_digest`** — a SHA-256 over a length-framed serialization of the language
+  and the _full_ content, markup included. It is **exact and injective**, and it is
+  the `merge_insert` dedup key. Framing (a length prefix per field, a variant tag
+  per node) is load-bearing: a plain concatenation like `Atom::reconstruct()` is
+  _not_ injective (adjacent placeholders `["ab","c"]` and `["a","bc"]` both flatten
+  to `"abc"`), which would silently collapse distinct atoms.
+
+Consequences: `put_atoms` dedups on `row_digest` (`WhenMatched::DoNothing`), so a
+byte-identical re-put is a true no-op while genuine markup variants both persist;
+`row_digest` is an implementation detail (callers never see or query it, and
+`decode` ignores it). And because `atom_id` is non-unique, lookup returns **all**
+matches — `get_atoms_by_id(id) -> Vec<Atom>` — the store never picks a winner among
+variants (that is the app's call, via observations).
 
 ## Observations table (increment 2 — schema agreed, details open)
 
 The six-column envelope, matching `observatory-observations` exactly:
 
-| column           | Arrow type                       | notes                                  |
-|------------------|----------------------------------|----------------------------------------|
-| `observation_id` | `FixedSizeBinary(16)`            | the minted ULID/UUID, as given.        |
-| `kind`           | `Utf8`                           | the kind label, verbatim. BITMAP (deferred). |
-| `subjects`       | `List<FixedSizeBinary(32)>`      | the keyed atoms, in order. LABEL_LIST (deferred). |
-| `recorded_at`    | `Timestamp(Microsecond, "UTC")`  | transaction time. BTREE (deferred).    |
-| `effective_at`   | `Timestamp(Microsecond, "UTC")`  | valid time. BTREE (deferred).          |
-| `payload`        | `Utf8`                           | the `serde_json::Value`, serialized to a JSON string; DuckDB parses it with JSON functions. |
+| column           | Arrow type                      | notes                                                                                       |
+| ---------------- | ------------------------------- | ------------------------------------------------------------------------------------------- |
+| `observation_id` | `FixedSizeBinary(16)`           | the minted ULID/UUID, as given.                                                             |
+| `kind`           | `Utf8`                          | the kind label, verbatim. BITMAP (deferred).                                                |
+| `subjects`       | `List<FixedSizeBinary(32)>`     | the keyed atoms, in order. LABEL_LIST (deferred).                                           |
+| `recorded_at`    | `Timestamp(Microsecond, "UTC")` | transaction time. BTREE (deferred).                                                         |
+| `effective_at`   | `Timestamp(Microsecond, "UTC")` | valid time. BTREE (deferred).                                                               |
+| `payload`        | `Utf8`                          | the `serde_json::Value`, serialized to a JSON string; DuckDB parses it with JSON functions. |
 
 Writes are **append-only**: `put_observations` never upserts. Two recordings that
 differ only in subject order are distinct events, exactly as the observations
 crate intends.
 
 **Open for increment 2 (do not decide now):**
+
 - `SystemTime ↔ Timestamp(µs, UTC)` encoding, including times before the Unix
   epoch (backfilled history → a signed micros count).
 - **Symmetric-kind canonicalization.** The design intent is to sort subjects for
   symmetric kinds on write so a derived TM does not double-count `[fr,en]` and
-  `[en,fr]`. But symmetry is a *per-kind* property that lives in a kind registry
+  `[en,fr]`. But symmetry is a _per-kind_ property that lives in a kind registry
   that does not exist yet. Until it does, the store records subjects **faithfully,
   as given**, and canonicalization is deferred — consistent with "the store
   collapses nothing the model didn't ask it to."
@@ -215,14 +236,14 @@ Async signatures (illustrative — the design, not the implementation):
 
 ```rust
 impl AtomStore {
-    // lifecycle
-    async fn open_or_create(path: &Path) -> Result<AtomStore>;
+    // lifecycle — two primitives, no open_or_create (a create_if_missing flag or a
+    // convenience combinator could be added later); URIs are &str, not &Path
+    async fn open(uri: &str) -> Result<AtomStore>;    // errors if absent
+    async fn create(uri: &str) -> Result<AtomStore>;  // empty dataset; errors if present
 
-    // atoms — increment 1
-    async fn put_atoms(&mut self, atoms: &[Atom]) -> Result<()>;            // idempotent upsert-by-id, one commit
-    async fn get_atom(&self, id: AtomId) -> Result<Option<Atom>>;
-    async fn get_atoms(&self, ids: &[AtomId]) -> Result<Vec<(AtomId, Option<Atom>)>>;
-    async fn verify_atom(&self, id: AtomId) -> Result<bool>;               // recompute id == stored key
+    // atoms — increment 1 (implemented)
+    async fn put_atoms(&mut self, atoms: &[Atom]) -> Result<()>;       // dedup-by-row_digest upsert, one commit
+    async fn get_atoms_by_id(&self, id: AtomId) -> Result<Vec<Atom>>;  // all matches for the non-unique id
 
     // maintenance — increment 3
     async fn ensure_indexes(&mut self) -> Result<()>;                      // BTREE on atom_id
@@ -231,8 +252,9 @@ impl AtomStore {
 }
 
 impl ObservationStore {
-    // lifecycle
-    async fn open_or_create(path: &Path) -> Result<ObservationStore>;
+    // lifecycle (same shape as AtomStore)
+    async fn open(uri: &str) -> Result<ObservationStore>;
+    async fn create(uri: &str) -> Result<ObservationStore>;
 
     // observations — increment 2
     async fn put_observations(&mut self, observations: &[Observation]) -> Result<()>;  // append-only, one commit
@@ -249,11 +271,16 @@ impl ObservationStore {
 Each store owns the maintenance of its own dataset, so `ensure_indexes` /
 `compact` / `cleanup_versions` appear on both.
 
-- `put_atoms` is **idempotent**: `merge_insert` keyed on `atom_id` with
-  "update-all when matched, insert-all when not." Re-putting a byte-identical atom
-  is a no-op (and content addressing guarantees duplicates *are* byte-identical).
-- `verify_atom` is a near-free faithfulness check: read the row, reconstruct the
-  `Atom`, recompute its id, compare to the stored key.
+- `put_atoms` is **idempotent**: `merge_insert` keyed on `row_digest` (the exact
+  key) with `WhenMatched::DoNothing` / `WhenNotMatched::InsertAll`. A byte-identical
+  re-put is a no-op; markup variants (same `atom_id`, different `row_digest`) both
+  persist. Empty input is a no-op that writes no version. It returns `()` — Lance's
+  `MergeStats` is deliberately not surfaced (exposing it would leak the backend; a
+  backend-agnostic `PutStats` could be added if a caller ever needs the counts).
+- `get_atoms_by_id` returns **every** atom under the id (markup variants included),
+  unranked; an unknown id yields an empty vec. `verify_atom` was considered and
+  **dropped** (YAGNI — fighting unobserved corruption atop content-addressing and
+  Lance's own checksums).
 
 ## Error strategy
 
@@ -291,11 +318,11 @@ handoff is decided when we get there; both work, the extension is newer.
 Built in small, reviewable increments, one file at a time, pausing at each.
 Intermediate commits need not compile (history is cleaned with `jj` at the end).
 
-1. **Atoms round-trip.** `error.rs` → `schema.rs` (atoms) → `encode.rs`/`decode.rs`
-   with unit tests on the conversion (empty content, adjacent text runs,
-   placeholder-only, every `node_kind`) → `atom_store.rs` (`AtomStore`:
-   `open_or_create`, `put_atoms`, `get_atom(s)`, `verify_atom`) with integration
-   tests round-tripping through a real on-disk dataset in a tempdir.
+1. **Atoms round-trip (DONE).** `error.rs` → `schema.rs` (atoms, incl. the internal
+   `row_digest` column) → `encode.rs`/`decode.rs` → `atom_store.rs` (`AtomStore`:
+   `open`, `create`, `put_atoms`, `get_atoms_by_id`; `verify_atom` dropped). Covered
+   by unit tests on the conversion and integration tests that round-trip through a
+   real on-disk dataset in a tempdir.
 2. **Observations.** `ObservationStore` in `observation_store.rs`: schema +
    encode/decode (the `List<FixedSizeBinary>` subjects, the two timestamps, the
    JSON payload) + `put_observations` (append-only) + `observations_about` /
@@ -316,9 +343,18 @@ Intermediate commits need not compile (history is cleaned with `jj` at the end).
   increment 4.
 - **Backend split into `observatory-arrow` + `observatory-lance`.** The
   domain↔Arrow mapping (`schema` / `encode` / `decode`) depends only on `arrow`;
-  Lance enters only at the store types. That seam is kept as an internal *module*
+  Lance enters only at the store types. That seam is kept as an internal _module_
   boundary now — the arrow-mapping modules never import `lance` — so extracting two
   crates later is a near-mechanical refactor, done only if a real second backend
   (e.g. `observatory-parquet`) is ever wanted. **Lance is the first-class citizen:**
   the shared schema deliberately targets what Lance can store (the `Union`
   rejection is precisely this), so any future backend must support at least that.
+  The store trait(s) are **derived, not predicted**: we build the concrete Lance
+  store fully, then distill the minimal trait from it — and _that_ distillation is
+  when the split happens. Likely trigger: wanting a test-double/mock store (probably
+  before a second real backend), or the shared shape becoming obvious once
+  `ObservationStore` also exists. Discipline that keeps the split mechanical: `lance`
+  stays confined to the store modules, and every intended-interface signature speaks
+  only domain types (`Atom` / `AtomId` / `StoreError`), never Lance types — Lance may
+  surface only in impl-specific extras that live _outside_ the trait (e.g. a
+  stats-returning `put_atoms_with_stats`).
