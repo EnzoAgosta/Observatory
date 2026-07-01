@@ -97,6 +97,7 @@ mod tests {
     /// unknown `node_kind`, an invalid language tag.
     fn raw_batch(rows: &[(&str, &[(&str, &str)])]) -> RecordBatch {
         let mut ids = FixedSizeBinaryBuilder::new(32);
+        let mut digests = FixedSizeBinaryBuilder::new(32);
         let mut languages = StringBuilder::new();
         let node_field = Arc::new(Field::new(
             NODE,
@@ -108,6 +109,7 @@ mod tests {
 
         for (language, nodes) in rows {
             ids.append_value([0u8; 32]).unwrap();
+            digests.append_value([0u8; 32]).unwrap();
             languages.append_value(language);
             let node_builder = contents.values();
             for (kind, data) in *nodes {
@@ -128,6 +130,7 @@ mod tests {
             atoms_schema(),
             vec![
                 Arc::new(ids.finish()),
+                Arc::new(digests.finish()),
                 Arc::new(languages.finish()),
                 Arc::new(contents.finish()),
             ],

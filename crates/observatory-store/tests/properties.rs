@@ -1,8 +1,10 @@
 //! Property-based round-trip fidelity for the Arrow layer.
 //!
-//! The headline invariant: for any batch of atoms, decoding what we encoded
-//! yields exactly what went in — over arbitrary content (any Unicode, empty
-//! strings, data colliding with the `node_kind` tag words) and varying arities.
+//! The headline invariant: for any batch of atoms, decoding what we encoded yields
+//! every *distinct* atom that went in, in first-seen order — over arbitrary content
+//! (any Unicode, empty strings, data colliding with the `node_kind` tag words) and
+//! varying arities. "Distinct" because encoding collapses byte-identical atoms (the
+//! `row_digest` dedup), so a duplicated input round-trips to a single row.
 
 use observatory_core::ir::{Atom, ContentNode, LanguageTag};
 use observatory_store::{decode_atoms, encode_atoms};
@@ -28,8 +30,16 @@ fn atom_strategy() -> impl Strategy<Value = Atom> {
 
 proptest! {
     #[test]
-    fn round_trips_arbitrary_atoms(atoms in prop::collection::vec(atom_strategy(), 0..16)) {
+    fn round_trips_distinct_atoms(atoms in prop::collection::vec(atom_strategy(), 0..16)) {
+        // Encoding dedups byte-identical atoms, so the faithful expectation is the
+        // input with duplicates dropped in first-seen order, not the raw input.
+        let mut expected: Vec<Atom> = Vec::new();
+        for atom in &atoms {
+            if !expected.contains(atom) {
+                expected.push(atom.clone());
+            }
+        }
         let batch = encode_atoms(&atoms);
-        prop_assert_eq!(decode_atoms(&batch).unwrap(), atoms);
+        prop_assert_eq!(decode_atoms(&batch).unwrap(), expected);
     }
 }

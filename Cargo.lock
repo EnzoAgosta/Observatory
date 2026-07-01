@@ -758,6 +758,7 @@ dependencies = [
  "arrow",
  "observatory-core",
  "proptest",
+ "sha2",
 ]
 
 [[package]]
