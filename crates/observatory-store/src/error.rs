@@ -15,6 +15,9 @@ pub enum StoreError {
     InvalidLanguageTag(LanguageTagError),
     /// A content node's `node_kind` was neither `"text"` nor `"placeholder"`.
     UnknownNodeKind(String),
+    /// The underlying Lance dataset — opening, writing, reading, or maintenance —
+    /// returned an error.
+    Lance(lance::Error),
 }
 
 impl fmt::Display for StoreError {
@@ -27,6 +30,7 @@ impl fmt::Display for StoreError {
                 write!(f, "stored language tag is invalid: {error}")
             }
             Self::UnknownNodeKind(kind) => write!(f, "unknown content node_kind: {kind:?}"),
+            Self::Lance(error) => write!(f, "lance dataset error: {error}"),
         }
     }
 }
@@ -36,6 +40,12 @@ impl std::error::Error for StoreError {}
 impl From<LanguageTagError> for StoreError {
     fn from(error: LanguageTagError) -> Self {
         Self::InvalidLanguageTag(error)
+    }
+}
+
+impl From<lance::Error> for StoreError {
+    fn from(error: lance::Error) -> Self {
+        Self::Lance(error)
     }
 }
 

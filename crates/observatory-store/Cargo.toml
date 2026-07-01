@@ -9,8 +9,11 @@ repository = "https://github.com/EnzoAgosta/Observatory"
 
 [dependencies]
 arrow = "58"
+lance = "7.0.0"
 observatory-core = { version = "0.2.0", path = "../observatory-core" }
 sha2.workspace = true
 
 [dev-dependencies]
 proptest = "1.11.0"
+tempfile = "3.27.0"
+tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros"] }
