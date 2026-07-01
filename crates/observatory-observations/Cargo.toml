@@ -13,3 +13,7 @@ categories = ["internationalization", "localization", "data-structures"]
 [dependencies]
 observatory-core = { version = "0.2.0", path = "../observatory-core" }
 serde_json = "1.0.150"
+sha2.workspace = true
+
+[dev-dependencies]
+proptest = "1.11.0"

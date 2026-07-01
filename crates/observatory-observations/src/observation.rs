@@ -5,30 +5,13 @@ use std::time::SystemTime;
 use observatory_core::identity::AtomId;
 use serde_json::Value;
 
-use crate::id::ObservationId;
 use crate::kind::Kind;
 
 /// An append-only fact about one atom (a *property*) or among several
-/// (a *relationship*), keyed to its subjects by [`AtomId`].
-///
-/// Construction is faithful: [`property`](Self::property) and
-/// [`relationship`](Self::relationship) record exactly the subjects they are
-/// given and judge nothing about them — two intent-named entry points to the same
-/// shape, not a type-enforced split. The distinction is a hint to the reader;
-/// nothing prevents a one-subject relationship, and sharper constructors or
-/// deeper validation are conveniences to add later, not policy imposed here.
-///
-/// Subject order is *preserved* exactly as given, but the crate ascribes it no
-/// meaning. Whether order is a *direction* (source→target) or noise is the kind's
-/// semantics — a translation is a symmetric equivalence (`en-US` ⇄ `fr-FR`,
-/// neither side privileged), while a kind like "context for" reads its order — and
-/// the crate enforces neither. Two recordings that differ only in subject order
-/// are therefore distinct observations here; collapsing them into one fact (and
-/// any other deduplication) is the caller's job, the same way `observatory-core`
-/// records atoms faithfully and leaves dedup-by-`AtomId` to whoever stores them.
+/// (a *relationship*), keyed to its subjects by [`AtomId`]. The observation's
+/// identity is *content-derived*: see [`id_from_observation`](crate::id_from_observation).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Observation {
-    id: ObservationId,
     kind: Kind,
     subjects: Vec<AtomId>,
     recorded_at: SystemTime,
@@ -37,11 +20,12 @@ pub struct Observation {
 }
 
 impl Observation {
-    /// The shared, faithful constructor both public entry points delegate to:
-    /// records the fields exactly as given, once `effective_at` has been
-    /// resolved.
-    fn new(
-        id: ObservationId,
+    /// The faithful constructor: records the fields exactly as given, with no
+    /// defaults applied. The storage layer uses this to round-trip a stored
+    /// observation without re-defaulting `effective_at`; callers usually want
+    /// [`property`](Self::property) or [`relationship`](Self::relationship)
+    /// instead.
+    pub fn new(
         kind: Kind,
         subjects: Vec<AtomId>,
         recorded_at: SystemTime,
@@ -49,7 +33,6 @@ impl Observation {
         payload: Value,
     ) -> Self {
         Self {
-            id,
             kind,
             subjects,
             recorded_at,
@@ -63,7 +46,6 @@ impl Observation {
     ///
     /// `effective_at` defaults to `recorded_at` when `None`.
     pub fn property(
-        id: ObservationId,
         kind: Kind,
         subject: AtomId,
         recorded_at: SystemTime,
@@ -71,7 +53,6 @@ impl Observation {
         payload: Value,
     ) -> Self {
         Self::new(
-            id,
             kind,
             vec![subject],
             recorded_at,
@@ -86,7 +67,6 @@ impl Observation {
     ///
     /// `effective_at` defaults to `recorded_at` when `None`.
     pub fn relationship(
-        id: ObservationId,
         kind: Kind,
         subjects: Vec<AtomId>,
         recorded_at: SystemTime,
@@ -94,18 +74,12 @@ impl Observation {
         payload: Value,
     ) -> Self {
         Self::new(
-            id,
             kind,
             subjects,
             recorded_at,
             effective_at.unwrap_or(recorded_at),
             payload,
         )
-    }
-
-    /// The observation's minted event id.
-    pub fn id(&self) -> ObservationId {
-        self.id
     }
 
     /// What the observation asserts.
@@ -143,9 +117,8 @@ mod tests {
     use super::*;
     use observatory_core::identity::id_from_atom;
     use observatory_core::ir::{Atom, ContentNode, LanguageTag};
-    use serde_json::json;
 
-    fn atom(lang: &str, text: &str) -> AtomId {
+    fn atom_id(lang: &str, text: &str) -> AtomId {
         id_from_atom(&Atom::new(
             LanguageTag::from_string(lang).unwrap(),
             [ContentNode::text(text)],
@@ -156,32 +129,25 @@ mod tests {
         Kind::new(label).unwrap()
     }
 
-    fn id() -> ObservationId {
-        ObservationId::from_bytes([0u8; 16])
-    }
-
     #[test]
     fn property_keys_to_a_single_subject() {
-        let subject = atom("en-US", "Hello");
+        let subject = atom_id("en-US", "Hello");
         let obs = Observation::property(
-            id(),
             kind("blacklisted"),
             subject,
             SystemTime::UNIX_EPOCH,
             None,
-            json!({ "reason": "offensive" }),
+            Value::Null,
         );
         assert_eq!(obs.subjects(), &[subject]);
-        assert_eq!(obs.kind().as_str(), "blacklisted");
     }
 
     #[test]
     fn relationship_keeps_its_subjects_in_order() {
-        let fr = atom("fr-FR", "Bonjour");
-        let en = atom("en-US", "Hello");
+        let fr = atom_id("fr-FR", "Bonjour");
+        let en = atom_id("en-US", "Hello");
         let obs = Observation::relationship(
-            id(),
-            kind("translation"),
+            kind("translation_of"),
             vec![fr, en],
             SystemTime::UNIX_EPOCH,
             None,
@@ -191,11 +157,9 @@ mod tests {
     }
 
     #[test]
-    fn relationship_records_any_number_of_subjects_faithfully() {
-        // Arity is not policed: a one-subject relationship is recorded as given.
-        let only = atom("en-US", "lonely");
+    fn relationship_records_a_single_subject_faithfully() {
+        let only = atom_id("en-US", "lonely");
         let obs = Observation::relationship(
-            id(),
             kind("interchangeable"),
             vec![only],
             SystemTime::UNIX_EPOCH,
@@ -207,41 +171,65 @@ mod tests {
 
     #[test]
     fn effective_at_defaults_to_recorded_at() {
+        let recorded = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1000);
         let obs = Observation::property(
-            id(),
             kind("approved_by"),
-            atom("en-US", "Hello"),
-            SystemTime::UNIX_EPOCH,
+            atom_id("en-US", "Hello"),
+            recorded,
             None,
             Value::Null,
         );
-        assert_eq!(obs.effective_at(), obs.recorded_at());
+        assert_eq!(obs.effective_at(), recorded);
     }
 
     #[test]
-    fn effective_at_can_differ_from_recorded_at_for_backfilled_facts() {
+    fn effective_at_can_differ_from_recorded_at() {
         let effective = SystemTime::UNIX_EPOCH;
-        let recorded = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1);
+        let recorded = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(86400);
         let obs = Observation::property(
-            id(),
             kind("approved_by"),
-            atom("en-US", "Hello"),
+            atom_id("en-US", "Hello"),
             recorded,
             Some(effective),
             Value::Null,
         );
         assert_eq!(obs.recorded_at(), recorded);
         assert_eq!(obs.effective_at(), effective);
-        assert_ne!(obs.effective_at(), obs.recorded_at());
+    }
+
+    #[test]
+    fn new_does_not_apply_default_effective_at() {
+        let recorded = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1000);
+        let effective = SystemTime::UNIX_EPOCH;
+        let obs = Observation::new(
+            kind("approved_by"),
+            vec![atom_id("en-US", "Hello")],
+            recorded,
+            effective,
+            Value::Null,
+        );
+        assert_eq!(obs.recorded_at(), recorded);
+        assert_eq!(obs.effective_at(), effective);
+    }
+
+    #[test]
+    fn kind_is_preserved_verbatim() {
+        let obs = Observation::property(
+            kind("approved_by"),
+            atom_id("en-US", "Hello"),
+            SystemTime::UNIX_EPOCH,
+            None,
+            Value::Null,
+        );
+        assert_eq!(obs.kind().as_str(), "approved_by");
     }
 
     #[test]
     fn payload_is_preserved() {
-        let payload = json!({ "confidence": 0.91, "author": "deepl:v2" });
+        let payload = serde_json::json!({ "confidence": 0.91, "author": "deepl:v2" });
         let obs = Observation::relationship(
-            id(),
-            kind("translation"),
-            vec![atom("fr-FR", "Bonjour"), atom("en-US", "Hello")],
+            kind("translation_of"),
+            vec![atom_id("fr-FR", "Bonjour"), atom_id("en-US", "Hello")],
             SystemTime::UNIX_EPOCH,
             None,
             payload.clone(),

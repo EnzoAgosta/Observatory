@@ -202,33 +202,60 @@ byte-identical re-put is a true no-op while genuine markup variants both persist
 matches — `get_atoms_by_id(id) -> Vec<Atom>` — the store never picks a winner among
 variants (that is the app's call, via observations).
 
-## Observations table (increment 2 — schema agreed, details open)
+## Observations table (increment 2 — DONE)
 
 The six-column envelope, matching `observatory-observations` exactly:
 
 | column           | Arrow type                      | notes                                                                                       |
 | ---------------- | ------------------------------- | ------------------------------------------------------------------------------------------- |
-| `observation_id` | `FixedSizeBinary(16)`           | the minted ULID/UUID, as given.                                                             |
+| `observation_id` | `FixedSizeBinary(32)`           | the content-addressed SHA-256, derived by the store via `id_from_observation`.              |
 | `kind`           | `Utf8`                          | the kind label, verbatim. BITMAP (deferred).                                                |
 | `subjects`       | `List<FixedSizeBinary(32)>`     | the keyed atoms, in order. LABEL_LIST (deferred).                                           |
 | `recorded_at`    | `Timestamp(Microsecond, "UTC")` | transaction time. BTREE (deferred).                                                         |
 | `effective_at`   | `Timestamp(Microsecond, "UTC")` | valid time. BTREE (deferred).                                                               |
 | `payload`        | `Utf8`                          | the `serde_json::Value`, serialized to a JSON string; DuckDB parses it with JSON functions. |
 
-Writes are **append-only**: `put_observations` never upserts. Two recordings that
-differ only in subject order are distinct events, exactly as the observations
-crate intends.
+**Content-addressed identity, not minted.** `observation_id` is a 32-byte SHA-256
+over the observation's canonical serialization (kind, subjects in order, both
+timestamps, and the canonical JSON of the payload), derived by the store itself
+— the same integrity contract as `atom_id`/`row_digest` on the atoms side. The
+id lives *off* the `Observation` struct; callers call
+`id_from_observation(&obs)` to learn it, as they call `id_from_atom(&atom)`.
 
-**Open for increment 2 (do not decide now):**
+**One key, not two.** Unlike the atoms table (which carries `atom_id` for
+matching and `row_digest` for exact dedup), the observations table has only
+`observation_id` — it is both the matching key and the exact dedup key, because
+observations have no analog to the atom's placeholder-markup-exclusion. There is
+no "lossy matching" vs "exact identity" split.
 
-- `SystemTime ↔ Timestamp(µs, UTC)` encoding, including times before the Unix
-  epoch (backfilled history → a signed micros count).
-- **Symmetric-kind canonicalization.** The design intent is to sort subjects for
-  symmetric kinds on write so a derived TM does not double-count `[fr,en]` and
-  `[en,fr]`. But symmetry is a _per-kind_ property that lives in a kind registry
-  that does not exist yet. Until it does, the store records subjects **faithfully,
-  as given**, and canonicalization is deferred — consistent with "the store
-  collapses nothing the model didn't ask it to."
+**Canonical JSON.** The payload is a `serde_json::Value`, and JSON object key
+order is not semantically significant. To keep the id reproducible across
+serializers and `serde_json` feature flags, the payload is fed through a small
+canonicalizer before hashing: object keys are sorted alphabetically at every
+depth, arrays are left in order, and the result is emitted compactly. The
+canonicalizer sorts keys itself rather than relying on `serde_json`'s internal
+`BTreeMap`, so the output is pinned by the code, not by a feature flag.
+
+Writes use **`merge_insert` on `observation_id`** with `WhenMatched::DoNothing`:
+a byte-identical re-put is a true no-op, while a genuinely distinct observation
+is inserted. This mirrors `put_atoms`'s `row_digest` dedup exactly — the
+content-addressed id makes dedup-on-write correctness-preserving, and the
+"append-only, never upsert" stance of the earlier design was predicated on the
+now-abandoned minted-id model. Two recordings that differ only in subject order
+are distinct observations (subject order feeds the hash), exactly as the
+observations crate intends.
+
+**Timestamp encoding:** `SystemTime` ↔ `Timestamp(µs, UTC)` is a signed `i64`
+micros count, with `duration_since(UNIX_EPOCH)`'s `Err` variant yielding the
+negative magnitude for pre-epoch backfilled history. Round-trips exactly through
+`system_time_to_micros` / `micros_to_system_time` in `observatory-observations`.
+
+**Symmetric-kind canonicalization** is **deferred**. The design intent is to
+sort subjects for symmetric kinds on write so a derived TM does not double-count
+`[fr,en]` and `[en,fr]`. But symmetry is a _per-kind_ property that lives in a
+kind registry that does not exist yet. Until it does, the store records subjects
+**faithfully, as given**, and canonicalization is deferred — consistent with "the
+store collapses nothing the model didn't ask it to."
 
 ## API surface
 
@@ -256,10 +283,13 @@ impl ObservationStore {
     async fn open(uri: &str) -> Result<ObservationStore>;
     async fn create(uri: &str) -> Result<ObservationStore>;
 
-    // observations — increment 2
-    async fn put_observations(&mut self, observations: &[Observation]) -> Result<()>;  // append-only, one commit
-    async fn observations_about(&self, atom: AtomId) -> Result<Vec<Observation>>;      // LABEL_LIST
-    async fn observations_of_kind(&self, kind: &Kind) -> Result<Vec<Observation>>;     // BITMAP
+    // observations — increment 2 (implemented)
+    async fn put_observations(&mut self, observations: &[Observation]) -> Result<()>;  // merge_insert on observation_id, one commit
+    async fn get_observation_by_id(&self, id: ObservationId) -> Result<Option<Observation>>;  // point lookup
+    async fn get_observations_of_kind(&self, kind: &Kind) -> Result<Vec<Observation>>;        // scan filter on kind
+
+    // deferred to increment 3 (needs LABEL_LIST index)
+    // async fn observations_about(&self, atom: AtomId) -> Result<Vec<Observation>>;
 
     // maintenance — increment 3
     async fn ensure_indexes(&mut self) -> Result<()>;                      // BITMAP on kind, LABEL_LIST on subjects
@@ -323,20 +353,28 @@ Intermediate commits need not compile (history is cleaned with `jj` at the end).
    `open`, `create`, `put_atoms`, `get_atoms_by_id`; `verify_atom` dropped). Covered
    by unit tests on the conversion and integration tests that round-trip through a
    real on-disk dataset in a tempdir.
-2. **Observations.** `ObservationStore` in `observation_store.rs`: schema +
+2. **Observations (DONE).** `ObservationStore` in `observation_store.rs`: schema +
    encode/decode (the `List<FixedSizeBinary>` subjects, the two timestamps, the
-   JSON payload) + `put_observations` (append-only) + `observations_about` /
-   `observations_of_kind`. Resolve the open timestamp and canonicalization
-   questions here.
+   JSON payload) + `put_observations` (content-addressed `merge_insert`) +
+   `get_observation_by_id` + `get_observations_of_kind`. Content-addressed
+   identity (`observation_id` is a SHA-256 derived by the store, mirroring
+   `atom_id`/`row_digest`), with a canonical JSON payload serializer and signed
+   `i64` micros timestamp encoding (pre-epoch supported). Covered by unit tests
+   on the conversion, integration tests through a real on-disk dataset, and a
+   proptest round-trip property. `observations_about` deferred to increment 3
+   (needs the LABEL_LIST index it was designed for; spike on Lance's array-
+   contains filter syntax deferred rather than committing to a fallback DuckDB
+   or the index will obsolete).
 3. **Indexes + maintenance.** `ensure_indexes`, `compact`, `cleanup_versions`.
 4. **Query path.** Expose the dataset path / Arrow scanner for DuckDB.
 
 ## Deferred decisions, collected
 
 - Scalar indexes — increment 3.
-- Observations timestamp encoding (incl. pre-epoch) — increment 2.
+- `observations_about` (array-membership on `subjects`) — increment 3, with the
+  LABEL_LIST index.
 - Symmetric-kind subject canonicalization (needs a kind registry that does not yet
-  exist) — increment 2 at the earliest, possibly later.
+  exist) — deferred; the store records subjects faithfully, as given.
 - Interior-mutability shared store (writers on `&self`) — only if a caller needs
   it.
 - DuckDB read path and which integration (extension vs. Arrow handoff) —

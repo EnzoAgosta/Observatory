@@ -13,13 +13,12 @@ _between_ strings, is an **observation**: an append-only fact keyed to one or mo
 
 ## Design
 
-- **Faithful, intent-named constructors.** `Observation::property` and
-  `Observation::relationship` record exactly the subjects they are given and judge
-  nothing about them — the way `Atom::new` faithfully records its content nodes.
-  The two names are a hint to the reader, not a type-enforced split: both build
-  the same shape, and nothing stops a one-subject relationship. Sharper
-  constructors (a strictly binary one, say) or deeper validation are conveniences
-  to add on top later, not policy the primitive imposes now.
+- **Identity is content-derived.** An observation's id is not minted — it is a
+  SHA-256 over a canonical serialization of every field (kind, subjects in order,
+  both timestamps, and the payload), computed by `id_from_observation`. The same
+  observation always yields the same id, so the storage layer dedups
+  byte-identical observations naturally — the same integrity contract
+  `observatory-core` applies to atoms.
 - **Structure, not semantics.** A `Kind` is an open, user-definable label, checked
   only for being non-empty. Which kind is valid at which arity, and what its
   payload must contain, is policy for a layer up.
@@ -28,22 +27,21 @@ _between_ strings, is an **observation**: an append-only fact keyed to one or mo
   neither side privileged as "source." The directional source→target view a
   classic TM bakes into storage is instead _derived_ at export time, by choosing
   which language is the source for the file you are producing. Subject order is
-  preserved as given but ascribed no meaning by the crate; whether it is a
-  direction or noise is the kind's semantics.
-- **Recording is faithful; dedup is the caller's.** The crate stores every
-  observation exactly as given and collapses nothing — two recordings that differ
-  only in subject order are distinct observations, and a re-asserted fact is a new
-  event. Canonicalizing symmetric relationships, deduplicating, and collapsing the
-  log into read models is the job of the layer that stores them (the store / app),
-  exactly as `observatory-core` records atoms faithfully and leaves
-  dedup-by-`AtomId` to the caller.
+  preserved as given and feeds the id, but the crate ascribes it no meaning;
+  whether it is a direction or noise is the kind's semantics.
+- **Canonicalization is the caller's.** The crate records every observation
+  exactly as given. Canonicalizing a symmetric kind — sorting its subjects so the
+  two orders collapse to one id — is the caller's job, applied before calling
+  `id_from_observation`, just as `observatory-core` records atoms faithfully and
+  leaves normalization to the caller.
 - **Bitemporal time.** `recorded_at` is when the fact was written; `effective_at`
   is when it became true. They differ only when history is backfilled, so
   `effective_at` defaults to `recorded_at`. The clock is the caller's — timestamps
   are arguments, never read from an ambient source.
 - **The payload is a kitchen sink.** Everything kind-specific — provenance,
-  scores, reasons — lives in a `serde_json::Value` payload. The envelope (id,
-  kind, subjects, the two timestamps) is all every observation shares.
+  scores, reasons — lives in a `serde_json::Value` payload. The envelope (kind,
+  subjects, the two timestamps) is all every observation shares; the id is a
+  derived projection over the whole, not a field.
 
 ## Example
 
@@ -52,7 +50,7 @@ use std::time::SystemTime;
 
 use observatory_core::identity::id_from_atom;
 use observatory_core::ir::{Atom, ContentNode, LanguageTag};
-use observatory_observations::{Kind, Observation, ObservationId};
+use observatory_observations::{Kind, Observation};
 use serde_json::json;
 
 // Two atoms whose ids we have already computed.
@@ -66,14 +64,12 @@ let fr = Atom::new(
 );
 let (en_id, fr_id) = (id_from_atom(&en), id_from_atom(&fr));
 
-// The caller mints the event id and supplies the clock.
-let obs_id = ObservationId::from_bytes([0; 16]);
+// The caller supplies the clock; the observation id is content-derived.
 let now = SystemTime::now();
 
 // "Bonjour" and "Hello" are translations of each other — a symmetric
 // equivalence, not a directed source→target row.
 let translation = Observation::relationship(
-    obs_id,
     Kind::new("translation").unwrap(),
     vec![fr_id, en_id],
     now,

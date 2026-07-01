@@ -32,20 +32,21 @@ This repo is a Cargo workspace of independently releasable crates:
   with configurable entity handling. *Implemented* (segment-level; whole-document
   structure is deliberately out of scope).
 - **[`observatory-store`](crates/observatory-store/)** — Lance-backed persistence.
-  Atom storage — create/open, dedup-on-write upsert, lookup by id — is implemented
-  and tested against real on-disk datasets; observation storage, scalar indexes,
-  and the query path are next. See its
+  Atom storage — create/open, dedup-on-write upsert, lookup by id — and
+  observation storage — content-addressed writes, lookup by id and by kind — are
+  implemented and tested against real on-disk datasets; `observations_about`,
+  scalar indexes, and the query path are next. See its
   [`DESIGN.md`](crates/observatory-store/DESIGN.md). *In progress.*
 
 ## Storage architecture
 
 The intended shape, and where it stands:
 
-- **Lance** is the storage substrate. Atoms are persisted today as a
-  content-addressed Lance dataset that dedups byte-identical writes; the
-  observation log will live alongside them, and Lance's built-in vector indexes
-  are the intended home for embeddings later. A Lance dataset is an immutable,
-  versioned directory — every write is a new version, like a git commit.
+- **Lance** is the storage substrate. Atoms and observations are persisted today
+  as content-addressed Lance datasets that dedup byte-identical writes; Lance's
+  built-in vector indexes are the intended home for embeddings later. A Lance
+  dataset is an immutable, versioned directory — every write is a new version,
+  like a git commit.
 - **DuckDB** *(planned, not yet wired up)* will be a query engine over that Lance
   data, not a second store — for the 1–2 hop joins and filtered scans that make up
   the common case (e.g. "all translations of this string approved by a human and
@@ -57,16 +58,17 @@ The intended shape, and where it stands:
 ## Status
 
 Implemented today: the domain model end to end — atoms, identity, and
-normalization (`observatory-core`) and the observation model
-(`observatory-observations`) — the XLIFF 1.2 segment codec
-(`observatory-xliff12`), and **atom persistence** on Lance
-(`observatory-store`): write-with-dedup and lookup by id, tested against real
-on-disk datasets.
+normalization (`observatory-core`), the observation model with content-addressed
+identity (`observatory-observations`) — the XLIFF 1.2 segment codec
+(`observatory-xliff12`), and **atom and observation persistence** on Lance
+(`observatory-store`): write-with-dedup and point/equality lookups, tested against
+real on-disk datasets.
 
-Next, roughly in order: observation persistence, scalar indexes and Lance
-maintenance (compaction, version cleanup), then the DuckDB query path. Embeddings
-and vector search, further format adapters (XLIFF dialects, TMX), and any graph
-view are further out.
+Next, roughly in order: `observations_about` and scalar indexes (BTREE on
+`atom_id`/timestamps, BITMAP on `kind`, LABEL_LIST on `subjects`), Lance
+maintenance (compaction, version cleanup), then the DuckDB query path.
+Embeddings and vector search, further format adapters (XLIFF dialects, TMX), and
+any graph view are further out.
 
 New here? [`docs/PHILOSOPHY.md`](docs/PHILOSOPHY.md) lays out the mental model —
 how to think about atoms, identity, and where responsibilities live — and is the

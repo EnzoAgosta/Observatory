@@ -4579,7 +4579,9 @@ name = "observatory-observations"
 version = "0.1.0"
 dependencies = [
  "observatory-core",
+ "proptest",
  "serde_json",
+ "sha2 0.11.0",
 ]
 
 [[package]]
@@ -4589,7 +4591,9 @@ dependencies = [
  "arrow",
  "lance",
  "observatory-core",
+ "observatory-observations",
  "proptest",
+ "serde_json",
  "sha2 0.11.0",
  "tempfile",
  "tokio",

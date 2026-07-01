@@ -19,6 +19,17 @@
 //! deeper validation are conveniences for later, not policy the primitive imposes
 //! now.
 //!
+//! ## Identity is content-derived
+//!
+//! An [`Observation`]'s identity is not minted — it is *derived* from its content
+//! by [`id_from_observation`], a SHA-256 over a canonical serialization of every
+//! field (kind, subjects in order, both timestamps, and the payload). The same
+//! observation always yields the same id, so byte-identical observations share one
+//! and the storage layer dedups them naturally — the same integrity contract
+//! [`observatory_core`] applies to atoms. Both timestamps feed the hash, so a
+//! re-asserted fact at a different time is a distinct id, exactly as the
+//! append-only model intends.
+//!
 //! ## Structure, not semantics
 //!
 //! This crate is a dumb primitive in the same spirit as [`observatory_core`]:
@@ -29,16 +40,17 @@
 //! enough kinds exist to make centralizing them worthwhile; until then, a kind is
 //! a label the caller is trusted to use consistently.
 //!
-//! Subject order is *preserved* exactly as given, but the crate ascribes it no
-//! meaning. Whether order carries a *direction* or is noise is the kind's
-//! semantics, not the crate's: a translation is a **symmetric** equivalence —
-//! `en-US` ⇄ `fr-FR`, neither side privileged, so the directional source→target
-//! view a classic TM bakes into storage is instead derived at export time — while
-//! a directed kind reads its subject order. The crate enforces none of this and
-//! deduplicates nothing: two recordings differing only in subject order are
-//! distinct observations, and canonicalizing a symmetric kind (or any other
-//! dedup) belongs to the layer that stores them — just as [`observatory_core`]
-//! records atoms faithfully and leaves dedup-by-`AtomId` to the caller.
+//! Subject order is *preserved* exactly as given, and it feeds the id, so two
+//! recordings that differ only in subject order are distinct observations here.
+//! Whether that order carries a *direction* or is noise is the kind's semantics:
+//! a translation is a **symmetric** equivalence — `en-US` ⇄ `fr-FR`, neither side
+//! privileged, so the directional source→target view a classic TM bakes into
+//! storage is instead derived at export time — while a directed kind reads its
+//! subject order. The crate enforces none of this: canonicalizing a symmetric kind
+//! (sorting its subjects so the two orders collapse to one id) is the caller's
+//! job, applied before calling [`id_from_observation`], just as
+//! [`observatory_core`] records atoms faithfully and leaves normalization to the
+//! caller.
 //!
 //! ## Time is bitemporal
 //!
@@ -54,19 +66,19 @@
 //!
 //! Everything kind-specific — provenance (who or what asserted it), scores,
 //! reasons, campaign ids — lives in the [`payload`](Observation::payload), an
-//! opaque [`serde_json::Value`]. The envelope above it (id, kind, subjects, the
-//! two timestamps) is the only thing every observation shares; storage and query
-//! layers project the payload into typed columns or views as concrete queries
-//! earn it.
+//! opaque [`serde_json::Value`]. The envelope above it (kind, subjects, the two
+//! timestamps) is the only thing every observation shares; the id is a derived
+//! projection over the whole, not a field. Storage and query layers project the
+//! payload into typed columns or views as concrete queries earn it.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
-mod id;
+pub mod identity;
 mod kind;
 mod observation;
 
-pub use id::ObservationId;
+pub use identity::{ObservationId, id_from_observation};
 pub use kind::{Kind, KindError};
 pub use observation::Observation;
 

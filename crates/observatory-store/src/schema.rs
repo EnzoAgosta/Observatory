@@ -1,6 +1,9 @@
-//! The Arrow schema for the **atoms** table — the single source of truth for its
-//! on-disk column layout, and the wire-format vocabulary (column names and the
-//! `node_kind` tag values) that `encode` and `decode` share.
+//! The Arrow schemas for the **atoms** and **observations** tables — the single
+//! source of truth for their on-disk column layouts, and the wire-format
+//! vocabulary (column names and the `node_kind` tag values) that `encode` and
+//! `decode` share.
+//!
+//! ## Atoms table
 //!
 //! | column       | type                                        |
 //! |--------------|---------------------------------------------|
@@ -22,10 +25,38 @@
 //! with no content is an *empty* list, never a null one. A content node is a
 //! struct tagged by `node_kind` (`"text"` or `"placeholder"`) rather than an Arrow
 //! `Union`, because Lance 7.0.0 cannot store a `Union` (see `DESIGN.md`).
+//!
+//! ## Observations table
+//!
+//! | column           | type                      |
+//! |------------------|---------------------------|
+//! | `observation_id` | `FixedSizeBinary(32)`       |
+//! | `kind`           | `Utf8`                      |
+//! | `subjects`       | `List<FixedSizeBinary(32)>` |
+//! | `recorded_at`    | `Timestamp(Microsecond, "UTC")` |
+//! | `effective_at`   | `Timestamp(Microsecond, "UTC")` |
+//! | `payload`        | `Utf8`                      |
+//!
+//! Unlike the atoms table, the observations table carries **one key, not two**.
+//! `observation_id` is the content-addressed identity — a SHA-256 over the
+//! observation's canonical serialization (kind, subjects in order, both timestamps,
+//! and the canonical JSON of the payload) — computed by
+//! [`id_from_observation`](observatory_observations::id_from_observation). It is
+//! both the matching key and the exact dedup key: there is no "lossy matching" vs
+//! "exact identity" split, because observations have no analog to the atom's
+//! placeholder-markup-exclusion. The store derives it itself rather than trusting a
+//! caller-supplied one, so a row's key can never disagree with its content.
+//!
+//! Every field is non-nullable. `subjects` is a list of fixed-width digests (one
+//! per `AtomId`), in the order the observation was given — order is significant and
+//! preserved. The two timestamps are signed micros since the Unix epoch
+//! (`Timestamp(Microsecond, "UTC")`), so pre-epoch backfilled history works. The
+//! payload is the `serde_json::Value` serialized to a JSON string — DuckDB parses it
+//! with JSON functions later, and the store never interprets it.
 
 use std::sync::Arc;
 
-use arrow::datatypes::{DataType, Field, Fields, Schema, SchemaRef};
+use arrow::datatypes::{DataType, Field, Fields, Schema, SchemaRef, TimeUnit};
 
 /// Byte width of a SHA-256 digest; both `atom_id` and `row_digest` are one, and
 /// Arrow's `FixedSizeBinary` takes an `i32`.
@@ -71,5 +102,46 @@ pub(crate) fn atoms_schema() -> SchemaRef {
         ),
         Field::new(LANGUAGE_COLUMN, DataType::Utf8, false),
         Field::new(CONTENT_NODES, DataType::List(Arc::new(node_field)), false),
+    ]))
+}
+
+pub(crate) const OBSERVATION_ID_COLUMN: &str = "observation_id";
+pub(crate) const KIND_COLUMN: &str = "kind";
+pub(crate) const SUBJECTS_COLUMN: &str = "subjects";
+pub(crate) const RECORDED_AT_COLUMN: &str = "recorded_at";
+pub(crate) const EFFECTIVE_AT_COLUMN: &str = "effective_at";
+pub(crate) const PAYLOAD_COLUMN: &str = "payload";
+
+/// Name Arrow gives the subjects list's element field; here, one `AtomId`.
+pub(crate) const SUBJECT_FIELD: &str = "atom_id";
+
+/// `Timestamp(Microsecond, "UTC")` — shared by `recorded_at` and `effective_at`.
+/// A signed `i64` of micros since the Unix epoch, with the timezone as metadata.
+fn utc_timestamp() -> DataType {
+    DataType::Timestamp(TimeUnit::Microsecond, Some(Arc::from("UTC")))
+}
+
+/// The Arrow schema of the observations table (see the module docs above).
+pub(crate) fn observations_schema() -> SchemaRef {
+    let subject_field = Field::new(
+        SUBJECT_FIELD,
+        DataType::FixedSizeBinary(DIGEST_WIDTH),
+        false,
+    );
+    Arc::new(Schema::new(vec![
+        Field::new(
+            OBSERVATION_ID_COLUMN,
+            DataType::FixedSizeBinary(DIGEST_WIDTH),
+            false,
+        ),
+        Field::new(KIND_COLUMN, DataType::Utf8, false),
+        Field::new(
+            SUBJECTS_COLUMN,
+            DataType::List(Arc::new(subject_field)),
+            false,
+        ),
+        Field::new(RECORDED_AT_COLUMN, utc_timestamp(), false),
+        Field::new(EFFECTIVE_AT_COLUMN, utc_timestamp(), false),
+        Field::new(PAYLOAD_COLUMN, DataType::Utf8, false),
     ]))
 }

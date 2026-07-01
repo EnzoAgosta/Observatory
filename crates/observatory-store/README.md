@@ -63,6 +63,22 @@ put_atoms(&[Atom])     -> ()            // dedup-on-write upsert, one commit
 get_atoms_by_id(AtomId) -> Vec<Atom>    // every atom filed under the id
 ```
 
+## API (`ObservationStore`)
+
+```text
+open(uri)                          -> ObservationStore     // errors if absent
+create(uri)                        -> ObservationStore     // empty dataset; errors if present
+put_observations(&[Observation])   -> ()                   // dedup-on-write upsert, one commit
+get_observation_by_id(ObservationId) -> Option<Observation> // point lookup (id is unique)
+get_observations_of_kind(&Kind)    -> Vec<Observation>     // all observations of one kind
+```
+
+Observations are content-addressed: the store derives each `ObservationId` itself
+via `id_from_observation` (a SHA-256 over kind, subjects in order, both
+timestamps, and the canonical JSON of the payload), so a row's key can never
+disagree with its content. The id lives off the `Observation` struct; callers
+call `id_from_observation(&obs)` to learn it, as they call `id_from_atom(&atom)`.
+
 URIs are `&str`, so local paths and object-store URIs (`s3://`, `gs://`, …) are
 handled uniformly.
 
@@ -95,9 +111,17 @@ async fn round_trip() -> observatory_store::Result<()> {
 
 ## Status
 
-Atom persistence is implemented and tested against real on-disk datasets:
-`open`/`create`, dedup-on-write `put_atoms`, and `get_atoms_by_id`. Still to come:
-`ObservationStore`, scalar indexes (`atom_id` BTREE, `kind` BITMAP, `subjects`
+Atom and observation persistence are implemented and tested against real on-disk
+datasets:
+
+- **`AtomStore`**: `open`/`create`, dedup-on-write `put_atoms`,
+  `get_atoms_by_id`.
+- **`ObservationStore`**: `open`/`create`, content-addressed `put_observations`
+  (merge_insert on the derived `ObservationId`), `get_observation_by_id`,
+  `get_observations_of_kind`.
+
+Still to come: `observations_about` (array-membership on `subjects`, needs the
+LABEL_LIST index), scalar indexes (`atom_id` BTREE, `kind` BITMAP, `subjects`
 LABEL_LIST), Lance maintenance (compaction, version cleanup), and a DuckDB query
 path over the datasets. See [`DESIGN.md`](DESIGN.md) for the full plan.
 

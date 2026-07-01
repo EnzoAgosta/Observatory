@@ -12,12 +12,14 @@ mod atom_store;
 mod decode;
 mod encode;
 mod error;
+mod observation_store;
 mod schema;
 
 pub use crate::atom_store::AtomStore;
-pub use crate::decode::decode_atoms;
-pub use crate::encode::encode_atoms;
+pub use crate::decode::{decode_atoms, decode_observations};
+pub use crate::encode::{encode_atoms, encode_observations};
 pub use crate::error::{Result, StoreError};
+pub use crate::observation_store::ObservationStore;
 
 /// Compiles the code examples in the crate README as doc-tests, so they can't
 /// drift from the real API. Exists only during doc-test collection.
