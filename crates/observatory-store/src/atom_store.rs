@@ -18,11 +18,13 @@ use arrow::error::ArrowError;
 use lance::Dataset;
 use lance::dataset::{MergeInsertBuilder, WhenMatched, WhenNotMatched, WriteMode, WriteParams};
 
+use observatory_core::identity::AtomId;
 use observatory_core::ir::Atom;
 
+use crate::decode::decode_atoms;
 use crate::encode::encode_atoms;
 use crate::error::Result;
-use crate::schema::{ROW_DIGEST_COLUMN, atoms_schema};
+use crate::schema::{ATOM_ID_COLUMN, ROW_DIGEST_COLUMN, atoms_schema};
 
 /// A handle to the atoms dataset at one version. Cloning the inner `Arc` is cheap;
 /// the whole point is that many readers can share one open dataset.
@@ -81,5 +83,20 @@ impl AtomStore {
         let (dataset, _stats) = job.execute_reader(reader).await?;
         self.dataset = dataset;
         Ok(())
+    }
+
+    /// Returns every atom stored under `id`. Because `atom_id` is the lossy matching
+    /// key, this can be more than one atom — the markup variants that share an id —
+    /// and the store returns them all, unranked; choosing among them is the caller's
+    /// concern. An unknown id yields an empty vector, not an error.
+    pub async fn get_atoms_by_id(&self, id: AtomId) -> Result<Vec<Atom>> {
+        let hex: String = id.digest().map(|byte| format!("{byte:02x}")).concat();
+        let predicate = format!("{ATOM_ID_COLUMN} = X'{hex}'");
+
+        let mut scanner = self.dataset.scan();
+        scanner.filter(&predicate)?;
+        let batch = scanner.try_into_batch().await?;
+
+        decode_atoms(&batch)
     }
 }
