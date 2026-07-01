@@ -6,6 +6,7 @@
 //! design lives in `DESIGN.md` alongside this source.
 
 #![forbid(unsafe_code)]
+#![warn(missing_docs)]
 
 mod atom_store;
 mod decode;
