@@ -31,12 +31,16 @@ This repo is a Cargo workspace of independently releasable crates:
   codec: parse and emit the content nodes of a `<source>`/`<target>` fragment,
   with configurable entity handling. *Implemented* (segment-level; whole-document
   structure is deliberately out of scope).
-- **[`observatory-store`](crates/observatory-store/)** — Lance-backed persistence.
-  Atom storage — create/open, dedup-on-write upsert, lookup by id — and
-  observation storage — content-addressed writes, lookup by id and by kind — are
-  implemented and tested against real on-disk datasets; `observations_about`,
-  scalar indexes, and the query path are next. See its
-  [`DESIGN.md`](crates/observatory-store/DESIGN.md). *In progress.*
+- **[`observatory-store`](crates/observatory-store/)** — the backend-agnostic
+  store traits (`AtomStore` / `ObservationStore`) and a single `StoreError`.
+  Trait signatures speak only domain types; lifecycle and maintenance are
+  deliberately off-trait. *Implemented.*
+- **[`observatory-lance`](crates/observatory-lance/)** — Lance-backed
+  implementation of the store traits. Atom and observation persistence —
+  streaming dedup-on-write upsert, lookup by id/kind/subject, scalar indexes,
+  and Lance maintenance primitives — implemented and tested against real
+  on-disk datasets. See its [`DESIGN.md`](crates/observatory-lance/DESIGN.md).
+  *In progress.*
 
 ## Storage architecture
 
@@ -60,12 +64,14 @@ The intended shape, and where it stands:
 Implemented today: the domain model end to end — atoms, identity, and
 normalization (`observatory-core`), the observation model with content-addressed
 identity (`observatory-observations`) — the XLIFF 1.2 segment codec
-(`observatory-xliff12`), and **atom and observation persistence** on Lance
-(`observatory-store`): write-with-dedup, point/equality lookups, the
-`observations_about` array-membership query, scalar indexes (BTREE on
-`atom_id`/`observation_id`, BITMAP on `kind`, LABEL_LIST on `subjects`), and
-Lance maintenance primitives (`ensure_indexes`, `optimize_indexes`, `compact`,
-`cleanup_versions`), all tested against real on-disk datasets.
+(`observatory-xliff12`), and **persistence** on Lance, split into the
+backend-agnostic trait crate (`observatory-store`) and its Lance implementation
+(`observatory-lance`): streaming dedup-on-write puts, point/equality lookups,
+the `get_observations_by_subject` array-membership query, scalar indexes
+(BTREE on `atom_id`/`observation_id`, BITMAP on `kind`, LABEL_LIST on
+`subjects`), and Lance maintenance primitives (`ensure_indexes`,
+`optimize_indexes`, `compact`, `cleanup_versions`), all tested against real
+on-disk datasets.
 
 Next, roughly in order: the DuckDB query path over the Lance datasets (compound
 predicates, range queries, joins), then embeddings and vector search, further

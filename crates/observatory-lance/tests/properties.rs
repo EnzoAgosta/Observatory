@@ -7,7 +7,7 @@
 //! `row_digest` dedup), so a duplicated input round-trips to a single row.
 
 use observatory_core::ir::{Atom, ContentNode, LanguageTag};
-use observatory_store::{decode_atoms, decode_observations, encode_atoms, encode_observations};
+use observatory_lance::{decode_atoms, decode_observations, encode_atoms, encode_observations};
 use proptest::prelude::*;
 
 fn content_node_strategy() -> impl Strategy<Value = ContentNode> {

@@ -1,16 +1,19 @@
-//! Integration tests for `ObservationStore` against a real on-disk Lance dataset.
+//! Integration tests for `LanceObservationStore` against a real on-disk Lance
+//! dataset.
 //!
 //! Each test creates its dataset in a fresh tempdir, so they are hermetic and
-//! parallel-safe. They exercise the public API only (lifecycle, the
-//! content-addressed dedup, and retrieval by id or kind), which is also the
-//! contract a future store trait would be distilled from.
+//! parallel-safe. They exercise the public API only (the trait surface from
+//! `observatory-store`, plus Lance-specific lifecycle and maintenance), which
+//! is also the contract the trait distilled from the concrete Lance store.
 
 use std::time::{Duration, SystemTime};
 
+use futures::stream;
 use lance::dataset::optimize::CompactionOptions;
 use lance_index::optimize::OptimizeOptions;
 use observatory_core::identity::{AtomId, id_from_atom};
 use observatory_core::ir::{Atom, ContentNode, LanguageTag};
+use observatory_lance::LanceObservationStore;
 use observatory_observations::Kind;
 use observatory_observations::identity::id_from_observation;
 use observatory_observations::{Observation, ObservationId};
@@ -62,16 +65,16 @@ fn approval_observation() -> Observation {
 async fn open_errors_when_absent() {
     let dir = tempfile::tempdir().unwrap();
     let uri = uri_in(&dir);
-    assert!(ObservationStore::open(&uri).await.is_err());
+    assert!(LanceObservationStore::open(&uri).await.is_err());
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn create_errors_when_present() {
     let dir = tempfile::tempdir().unwrap();
     let uri = uri_in(&dir);
-    ObservationStore::create(&uri).await.unwrap();
+    LanceObservationStore::create(&uri).await.unwrap();
     assert!(
-        ObservationStore::create(&uri).await.is_err(),
+        LanceObservationStore::create(&uri).await.is_err(),
         "create must not clobber an existing dataset"
     );
 }
@@ -80,11 +83,11 @@ async fn create_errors_when_present() {
 async fn put_then_get_by_id_roundtrips() {
     let dir = tempfile::tempdir().unwrap();
     let uri = uri_in(&dir);
-    let mut store = ObservationStore::create(&uri).await.unwrap();
+    let mut store = LanceObservationStore::create(&uri).await.unwrap();
 
     let obs = translation_observation();
     let id = id_from_observation(&obs);
-    store.put_observations(std::slice::from_ref(&obs)).await.unwrap();
+    store.put_observations(stream::iter([obs.clone()])).await.unwrap();
 
     assert_eq!(store.get_observation_by_id(id).await.unwrap(), Some(obs));
 }
@@ -93,12 +96,12 @@ async fn put_then_get_by_id_roundtrips() {
 async fn put_then_get_by_kind_returns_only_matching() {
     let dir = tempfile::tempdir().unwrap();
     let uri = uri_in(&dir);
-    let mut store = ObservationStore::create(&uri).await.unwrap();
+    let mut store = LanceObservationStore::create(&uri).await.unwrap();
 
     let translation = translation_observation();
     let approval = approval_observation();
     store
-        .put_observations(&[translation.clone(), approval])
+        .put_observations(stream::iter([translation.clone(), approval]))
         .await
         .unwrap();
 
@@ -117,11 +120,11 @@ async fn data_persists_across_reopen() {
     let id = id_from_observation(&obs);
 
     {
-        let mut store = ObservationStore::create(&uri).await.unwrap();
-        store.put_observations(std::slice::from_ref(&obs)).await.unwrap();
+        let mut store = LanceObservationStore::create(&uri).await.unwrap();
+        store.put_observations(stream::iter([obs.clone()])).await.unwrap();
     }
 
-    let store = ObservationStore::open(&uri).await.unwrap();
+    let store = LanceObservationStore::open(&uri).await.unwrap();
     assert_eq!(store.get_observation_by_id(id).await.unwrap(), Some(obs));
 }
 
@@ -129,12 +132,12 @@ async fn data_persists_across_reopen() {
 async fn re_put_is_idempotent() {
     let dir = tempfile::tempdir().unwrap();
     let uri = uri_in(&dir);
-    let mut store = ObservationStore::create(&uri).await.unwrap();
+    let mut store = LanceObservationStore::create(&uri).await.unwrap();
     let obs = translation_observation();
     let id = id_from_observation(&obs);
 
-    store.put_observations(std::slice::from_ref(&obs)).await.unwrap();
-    store.put_observations(std::slice::from_ref(&obs)).await.unwrap();
+    store.put_observations(stream::iter([obs.clone()])).await.unwrap();
+    store.put_observations(stream::iter([obs.clone()])).await.unwrap();
 
     assert_eq!(
         store.get_observation_by_id(id).await.unwrap(),
@@ -147,12 +150,12 @@ async fn re_put_is_idempotent() {
 async fn within_batch_duplicates_collapse() {
     let dir = tempfile::tempdir().unwrap();
     let uri = uri_in(&dir);
-    let mut store = ObservationStore::create(&uri).await.unwrap();
+    let mut store = LanceObservationStore::create(&uri).await.unwrap();
     let obs = translation_observation();
     let id = id_from_observation(&obs);
 
     store
-        .put_observations(&[obs.clone(), obs.clone(), obs.clone()])
+        .put_observations(stream::iter([obs.clone(), obs.clone(), obs.clone()]))
         .await
         .unwrap();
 
@@ -166,13 +169,13 @@ async fn within_batch_duplicates_collapse() {
 async fn empty_put_is_a_noop() {
     let dir = tempfile::tempdir().unwrap();
     let uri = uri_in(&dir);
-    let mut store = ObservationStore::create(&uri).await.unwrap();
+    let mut store = LanceObservationStore::create(&uri).await.unwrap();
     let obs = translation_observation();
     let id = id_from_observation(&obs);
 
-    store.put_observations(&[]).await.unwrap();
-    store.put_observations(std::slice::from_ref(&obs)).await.unwrap();
-    store.put_observations(&[]).await.unwrap();
+    store.put_observations(stream::empty::<Observation>()).await.unwrap();
+    store.put_observations(stream::iter([obs.clone()])).await.unwrap();
+    store.put_observations(stream::empty::<Observation>()).await.unwrap();
 
     assert_eq!(store.get_observation_by_id(id).await.unwrap(), Some(obs));
 }
@@ -181,7 +184,7 @@ async fn empty_put_is_a_noop() {
 async fn get_by_unknown_id_is_none() {
     let dir = tempfile::tempdir().unwrap();
     let uri = uri_in(&dir);
-    let store = ObservationStore::create(&uri).await.unwrap();
+    let store = LanceObservationStore::create(&uri).await.unwrap();
     let absent = ObservationId::from_digest([0u8; 32]);
     assert!(store
         .get_observation_by_id(absent)
@@ -194,7 +197,7 @@ async fn get_by_unknown_id_is_none() {
 async fn get_by_unknown_kind_is_empty() {
     let dir = tempfile::tempdir().unwrap();
     let uri = uri_in(&dir);
-    let store = ObservationStore::create(&uri).await.unwrap();
+    let store = LanceObservationStore::create(&uri).await.unwrap();
     assert!(
         store
             .get_observations_of_kind(&kind("never_used"))
@@ -208,7 +211,7 @@ async fn get_by_unknown_kind_is_empty() {
 async fn bitemporal_pre_epoch_effective_at_roundtrips() {
     let dir = tempfile::tempdir().unwrap();
     let uri = uri_in(&dir);
-    let mut store = ObservationStore::create(&uri).await.unwrap();
+    let mut store = LanceObservationStore::create(&uri).await.unwrap();
 
     let obs = Observation::property(
         kind("approved_by"),
@@ -218,7 +221,7 @@ async fn bitemporal_pre_epoch_effective_at_roundtrips() {
         json!({ "reviewer": "alice" }),
     );
     let id = id_from_observation(&obs);
-    store.put_observations(std::slice::from_ref(&obs)).await.unwrap();
+    store.put_observations(stream::iter([obs.clone()])).await.unwrap();
 
     assert_eq!(store.get_observation_by_id(id).await.unwrap(), Some(obs));
 }
@@ -227,7 +230,7 @@ async fn bitemporal_pre_epoch_effective_at_roundtrips() {
 async fn distinct_observations_sharing_subjects_both_persist() {
     let dir = tempfile::tempdir().unwrap();
     let uri = uri_in(&dir);
-    let mut store = ObservationStore::create(&uri).await.unwrap();
+    let mut store = LanceObservationStore::create(&uri).await.unwrap();
 
     let subject = atom_id("en-US", "Hello");
     let approved = Observation::property(
@@ -250,7 +253,7 @@ async fn distinct_observations_sharing_subjects_both_persist() {
     assert_ne!(approved_id, blacklisted_id);
 
     store
-        .put_observations(&[approved.clone(), blacklisted.clone()])
+        .put_observations(stream::iter([approved.clone(), blacklisted.clone()]))
         .await
         .unwrap();
 
@@ -270,9 +273,9 @@ async fn distinct_observations_sharing_subjects_both_persist() {
 async fn ensure_indexes_succeeds_after_puts() {
     let dir = tempfile::tempdir().unwrap();
     let uri = uri_in(&dir);
-    let mut store = ObservationStore::create(&uri).await.unwrap();
+    let mut store = LanceObservationStore::create(&uri).await.unwrap();
     store
-        .put_observations(std::slice::from_ref(&translation_observation()))
+        .put_observations(stream::iter([translation_observation()]))
         .await
         .unwrap();
     store.ensure_indexes().await.unwrap();
@@ -282,9 +285,9 @@ async fn ensure_indexes_succeeds_after_puts() {
 async fn ensure_indexes_is_idempotent() {
     let dir = tempfile::tempdir().unwrap();
     let uri = uri_in(&dir);
-    let mut store = ObservationStore::create(&uri).await.unwrap();
+    let mut store = LanceObservationStore::create(&uri).await.unwrap();
     store
-        .put_observations(std::slice::from_ref(&translation_observation()))
+        .put_observations(stream::iter([translation_observation()]))
         .await
         .unwrap();
     store.ensure_indexes().await.unwrap();
@@ -292,10 +295,10 @@ async fn ensure_indexes_is_idempotent() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn observations_about_returns_matching_observations() {
+async fn get_observations_by_subject_returns_matching_observations() {
     let dir = tempfile::tempdir().unwrap();
     let uri = uri_in(&dir);
-    let mut store = ObservationStore::create(&uri).await.unwrap();
+    let mut store = LanceObservationStore::create(&uri).await.unwrap();
 
     let en_hello = atom_id("en-US", "Hello");
     let fr_bonjour = atom_id("fr-FR", "Bonjour");
@@ -323,11 +326,11 @@ async fn observations_about_returns_matching_observations() {
         json!({}),
     );
     store
-        .put_observations(&[translation.clone(), approval.clone(), unrelated])
+        .put_observations(stream::iter([translation.clone(), approval.clone(), unrelated]))
         .await
         .unwrap();
 
-    let about_en_hello = store.observations_about(en_hello).await.unwrap();
+    let about_en_hello = store.get_observations_by_subject(en_hello).await.unwrap();
     assert_eq!(about_en_hello.len(), 2);
     let ids: Vec<ObservationId> = about_en_hello
         .iter()
@@ -338,14 +341,14 @@ async fn observations_about_returns_matching_observations() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn observations_about_unknown_atom_is_empty() {
+async fn get_observations_by_subject_unknown_atom_is_empty() {
     let dir = tempfile::tempdir().unwrap();
     let uri = uri_in(&dir);
-    let store = ObservationStore::create(&uri).await.unwrap();
+    let store = LanceObservationStore::create(&uri).await.unwrap();
     let absent = AtomId::from_digest([0u8; 32]);
     assert!(
         store
-            .observations_about(absent)
+            .get_observations_by_subject(absent)
             .await
             .unwrap()
             .is_empty()
@@ -353,10 +356,10 @@ async fn observations_about_unknown_atom_is_empty() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn observations_about_returns_same_after_indexing() {
+async fn get_observations_by_subject_returns_same_after_indexing() {
     let dir = tempfile::tempdir().unwrap();
     let uri = uri_in(&dir);
-    let mut store = ObservationStore::create(&uri).await.unwrap();
+    let mut store = LanceObservationStore::create(&uri).await.unwrap();
 
     let en_hello = atom_id("en-US", "Hello");
     let obs = Observation::property(
@@ -366,11 +369,11 @@ async fn observations_about_returns_same_after_indexing() {
         None,
         json!({}),
     );
-    store.put_observations(std::slice::from_ref(&obs)).await.unwrap();
+    store.put_observations(stream::iter([obs.clone()])).await.unwrap();
 
-    let before = store.observations_about(en_hello).await.unwrap();
+    let before = store.get_observations_by_subject(en_hello).await.unwrap();
     store.ensure_indexes().await.unwrap();
-    let after = store.observations_about(en_hello).await.unwrap();
+    let after = store.get_observations_by_subject(en_hello).await.unwrap();
     assert_eq!(before.len(), after.len());
 }
 
@@ -378,7 +381,7 @@ async fn observations_about_returns_same_after_indexing() {
 async fn optimize_indexes_covers_new_writes() {
     let dir = tempfile::tempdir().unwrap();
     let uri = uri_in(&dir);
-    let mut store = ObservationStore::create(&uri).await.unwrap();
+    let mut store = LanceObservationStore::create(&uri).await.unwrap();
 
     let en_hello = atom_id("en-US", "Hello");
     let first = Observation::property(
@@ -388,7 +391,7 @@ async fn optimize_indexes_covers_new_writes() {
         None,
         json!({}),
     );
-    store.put_observations(std::slice::from_ref(&first)).await.unwrap();
+    store.put_observations(stream::iter([first.clone()])).await.unwrap();
     store.ensure_indexes().await.unwrap();
 
     let second = Observation::property(
@@ -398,13 +401,13 @@ async fn optimize_indexes_covers_new_writes() {
         None,
         json!({}),
     );
-    store.put_observations(std::slice::from_ref(&second)).await.unwrap();
+    store.put_observations(stream::iter([second.clone()])).await.unwrap();
     store
         .optimize_indexes(&OptimizeOptions::default())
         .await
         .unwrap();
 
-    let got = store.observations_about(en_hello).await.unwrap();
+    let got = store.get_observations_by_subject(en_hello).await.unwrap();
     assert_eq!(got.len(), 2);
 }
 
@@ -412,7 +415,7 @@ async fn optimize_indexes_covers_new_writes() {
 async fn compact_preserves_all_observations() {
     let dir = tempfile::tempdir().unwrap();
     let uri = uri_in(&dir);
-    let mut store = ObservationStore::create(&uri).await.unwrap();
+    let mut store = LanceObservationStore::create(&uri).await.unwrap();
     let observations: Vec<Observation> = (0..4)
         .map(|i| {
             Observation::property(
@@ -425,7 +428,7 @@ async fn compact_preserves_all_observations() {
         })
         .collect();
     for obs in &observations {
-        store.put_observations(std::slice::from_ref(obs)).await.unwrap();
+        store.put_observations(stream::iter([obs.clone()])).await.unwrap();
     }
 
     store.compact(&CompactionOptions::default()).await.unwrap();
@@ -440,7 +443,7 @@ async fn compact_preserves_all_observations() {
 async fn cleanup_versions_preserves_latest_observations() {
     let dir = tempfile::tempdir().unwrap();
     let uri = uri_in(&dir);
-    let mut store = ObservationStore::create(&uri).await.unwrap();
+    let mut store = LanceObservationStore::create(&uri).await.unwrap();
     let first = translation_observation();
     let second = approval_observation();
     let third = Observation::property(
@@ -450,9 +453,9 @@ async fn cleanup_versions_preserves_latest_observations() {
         None,
         json!({}),
     );
-    store.put_observations(std::slice::from_ref(&first)).await.unwrap();
-    store.put_observations(std::slice::from_ref(&second)).await.unwrap();
-    store.put_observations(std::slice::from_ref(&third)).await.unwrap();
+    store.put_observations(stream::iter([first.clone()])).await.unwrap();
+    store.put_observations(stream::iter([second.clone()])).await.unwrap();
+    store.put_observations(stream::iter([third.clone()])).await.unwrap();
 
     let stats = store.cleanup_versions(1).await.unwrap();
     assert!(stats.old_versions >= 2);
@@ -466,11 +469,11 @@ async fn cleanup_versions_preserves_latest_observations() {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(16))]
 
-    /// For any batch of observations, `observations_about(subject)` returns
+    /// For any batch of observations, `get_observations_by_subject(subject)` returns
     /// exactly the observations whose `subjects` list contains `subject` —
     /// no more, no less.
     #[test]
-    fn observations_about_finds_exactly_matching(
+    fn get_observations_by_subject_finds_exactly_matching(
         observations in prop::collection::vec(observation_strategy(), 0..8)
     ) {
         let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -481,8 +484,8 @@ proptest! {
         let passed = runtime.block_on(async {
             let dir = tempfile::tempdir().unwrap();
             let uri = uri_in(&dir);
-            let mut store = ObservationStore::create(&uri).await.unwrap();
-            store.put_observations(&observations).await.unwrap();
+            let mut store = LanceObservationStore::create(&uri).await.unwrap();
+            store.put_observations(stream::iter(observations.clone())).await.unwrap();
 
             let mut all_subjects: Vec<AtomId> = Vec::new();
             for obs in &observations {
@@ -490,7 +493,7 @@ proptest! {
             }
 
             for subject in all_subjects {
-                let got = store.observations_about(subject).await.unwrap();
+                let got = store.get_observations_by_subject(subject).await.unwrap();
                 let expected: usize = observations
                     .iter()
                     .filter(|obs| obs.subjects().contains(&subject))
@@ -502,7 +505,7 @@ proptest! {
             true
         });
 
-        prop_assert!(passed, "observations_about returned the wrong count");
+        prop_assert!(passed, "get_observations_by_subject returned the wrong count");
     }
 }
 

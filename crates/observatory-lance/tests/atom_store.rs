@@ -1,12 +1,14 @@
-//! Integration tests for `AtomStore` against a real on-disk Lance dataset.
+//! Integration tests for `LanceAtomStore` against a real on-disk Lance dataset.
 //!
 //! Each test creates its dataset in a fresh tempdir, so they are hermetic and
-//! parallel-safe. They exercise the public API only (lifecycle, the `row_digest`
-//! dedup, and retrieval by the non-unique `atom_id`), which is also the contract a
-//! future store trait would be distilled from.
+//! parallel-safe. They exercise the public API only (the trait surface from
+//! `observatory-store`, plus Lance-specific lifecycle and maintenance), which
+//! is also the contract the trait distilled from the concrete Lance store.
 
+use futures::stream;
 use observatory_core::identity::id_from_atom;
 use observatory_core::ir::{Atom, ContentNode, LanguageTag};
+use observatory_lance::LanceAtomStore;
 use observatory_store::AtomStore;
 use lance::dataset::optimize::CompactionOptions;
 use lance_index::optimize::OptimizeOptions;
@@ -38,16 +40,16 @@ fn sorted(mut atoms: Vec<Atom>) -> Vec<Atom> {
 async fn open_errors_when_absent() {
     let dir = tempfile::tempdir().unwrap();
     let uri = uri_in(&dir);
-    assert!(AtomStore::open(&uri).await.is_err());
+    assert!(LanceAtomStore::open(&uri).await.is_err());
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn create_errors_when_present() {
     let dir = tempfile::tempdir().unwrap();
     let uri = uri_in(&dir);
-    AtomStore::create(&uri).await.unwrap();
+    LanceAtomStore::create(&uri).await.unwrap();
     assert!(
-        AtomStore::create(&uri).await.is_err(),
+        LanceAtomStore::create(&uri).await.is_err(),
         "create must not clobber an existing dataset"
     );
 }
@@ -56,7 +58,7 @@ async fn create_errors_when_present() {
 async fn get_unknown_id_is_empty() {
     let dir = tempfile::tempdir().unwrap();
     let uri = uri_in(&dir);
-    let store = AtomStore::create(&uri).await.unwrap();
+    let store = LanceAtomStore::create(&uri).await.unwrap();
     let absent = atom("en-US", vec![ContentNode::text("never stored")]);
     assert!(
         store
@@ -71,7 +73,7 @@ async fn get_unknown_id_is_empty() {
 async fn put_then_get_roundtrips_mixed_content() {
     let dir = tempfile::tempdir().unwrap();
     let uri = uri_in(&dir);
-    let mut store = AtomStore::create(&uri).await.unwrap();
+    let mut store = LanceAtomStore::create(&uri).await.unwrap();
 
     let a = atom(
         "de-DE",
@@ -82,7 +84,7 @@ async fn put_then_get_roundtrips_mixed_content() {
             ContentNode::placeholder("</b>"),
         ],
     );
-    store.put_atoms(std::slice::from_ref(&a)).await.unwrap();
+    store.put_atoms(stream::iter([a.clone()])).await.unwrap();
 
     assert_eq!(
         store.get_atoms_by_id(id_from_atom(&a)).await.unwrap(),
@@ -97,11 +99,11 @@ async fn data_persists_across_reopen() {
     let a = atom("fr-FR", vec![ContentNode::text("bonjour")]);
 
     {
-        let mut store = AtomStore::create(&uri).await.unwrap();
-        store.put_atoms(std::slice::from_ref(&a)).await.unwrap();
+        let mut store = LanceAtomStore::create(&uri).await.unwrap();
+        store.put_atoms(stream::iter([a.clone()])).await.unwrap();
     }
 
-    let store = AtomStore::open(&uri).await.unwrap();
+    let store = LanceAtomStore::open(&uri).await.unwrap();
     assert_eq!(
         store.get_atoms_by_id(id_from_atom(&a)).await.unwrap(),
         vec![a]
@@ -112,11 +114,11 @@ async fn data_persists_across_reopen() {
 async fn re_put_is_idempotent() {
     let dir = tempfile::tempdir().unwrap();
     let uri = uri_in(&dir);
-    let mut store = AtomStore::create(&uri).await.unwrap();
+    let mut store = LanceAtomStore::create(&uri).await.unwrap();
     let a = atom("en-US", vec![ContentNode::text("hello")]);
 
-    store.put_atoms(std::slice::from_ref(&a)).await.unwrap();
-    store.put_atoms(std::slice::from_ref(&a)).await.unwrap();
+    store.put_atoms(stream::iter([a.clone()])).await.unwrap();
+    store.put_atoms(stream::iter([a.clone()])).await.unwrap();
 
     assert_eq!(
         store.get_atoms_by_id(id_from_atom(&a)).await.unwrap(),
@@ -129,11 +131,11 @@ async fn re_put_is_idempotent() {
 async fn within_batch_duplicates_collapse() {
     let dir = tempfile::tempdir().unwrap();
     let uri = uri_in(&dir);
-    let mut store = AtomStore::create(&uri).await.unwrap();
+    let mut store = LanceAtomStore::create(&uri).await.unwrap();
     let a = atom("en-US", vec![ContentNode::text("hello")]);
 
     store
-        .put_atoms(&[a.clone(), a.clone(), a.clone()])
+        .put_atoms(stream::iter([a.clone(), a.clone(), a.clone()]))
         .await
         .unwrap();
 
@@ -147,7 +149,7 @@ async fn within_batch_duplicates_collapse() {
 async fn markup_variants_share_id_and_both_return() {
     let dir = tempfile::tempdir().unwrap();
     let uri = uri_in(&dir);
-    let mut store = AtomStore::create(&uri).await.unwrap();
+    let mut store = LanceAtomStore::create(&uri).await.unwrap();
 
     // Same text/placeholder structure, different placeholder markup: identical
     // atom_id, distinct atoms that must both persist and both come back.
@@ -155,7 +157,7 @@ async fn markup_variants_share_id_and_both_return() {
     let bpt = atom("en-US", vec![ContentNode::placeholder("<bpt/>")]);
     assert_eq!(id_from_atom(&ph), id_from_atom(&bpt));
 
-    store.put_atoms(&[ph.clone(), bpt.clone()]).await.unwrap();
+    store.put_atoms(stream::iter([ph.clone(), bpt.clone()])).await.unwrap();
 
     let got = store.get_atoms_by_id(id_from_atom(&ph)).await.unwrap();
     assert_eq!(sorted(got), sorted(vec![ph, bpt]));
@@ -165,12 +167,12 @@ async fn markup_variants_share_id_and_both_return() {
 async fn empty_put_is_a_noop() {
     let dir = tempfile::tempdir().unwrap();
     let uri = uri_in(&dir);
-    let mut store = AtomStore::create(&uri).await.unwrap();
+    let mut store = LanceAtomStore::create(&uri).await.unwrap();
     let a = atom("en-US", vec![ContentNode::text("hello")]);
 
-    store.put_atoms(&[]).await.unwrap();
-    store.put_atoms(std::slice::from_ref(&a)).await.unwrap();
-    store.put_atoms(&[]).await.unwrap();
+    store.put_atoms(stream::empty::<Atom>()).await.unwrap();
+    store.put_atoms(stream::iter([a.clone()])).await.unwrap();
+    store.put_atoms(stream::empty::<Atom>()).await.unwrap();
 
     assert_eq!(
         store.get_atoms_by_id(id_from_atom(&a)).await.unwrap(),
@@ -184,12 +186,12 @@ async fn empty_put_is_a_noop() {
 async fn ensure_indexes_succeeds_after_puts() {
     let dir = tempfile::tempdir().unwrap();
     let uri = uri_in(&dir);
-    let mut store = AtomStore::create(&uri).await.unwrap();
+    let mut store = LanceAtomStore::create(&uri).await.unwrap();
     store
-        .put_atoms(std::slice::from_ref(&atom(
+        .put_atoms(stream::iter([atom(
             "en-US",
             vec![ContentNode::text("hello")],
-        )))
+        )]))
         .await
         .unwrap();
     store.ensure_indexes().await.unwrap();
@@ -199,12 +201,12 @@ async fn ensure_indexes_succeeds_after_puts() {
 async fn ensure_indexes_is_idempotent() {
     let dir = tempfile::tempdir().unwrap();
     let uri = uri_in(&dir);
-    let mut store = AtomStore::create(&uri).await.unwrap();
+    let mut store = LanceAtomStore::create(&uri).await.unwrap();
     store
-        .put_atoms(std::slice::from_ref(&atom(
+        .put_atoms(stream::iter([atom(
             "en-US",
             vec![ContentNode::text("hello")],
-        )))
+        )]))
         .await
         .unwrap();
     store.ensure_indexes().await.unwrap();
@@ -215,10 +217,10 @@ async fn ensure_indexes_is_idempotent() {
 async fn get_atoms_by_id_returns_same_results_after_indexing() {
     let dir = tempfile::tempdir().unwrap();
     let uri = uri_in(&dir);
-    let mut store = AtomStore::create(&uri).await.unwrap();
+    let mut store = LanceAtomStore::create(&uri).await.unwrap();
     let a = atom("en-US", vec![ContentNode::text("hello")]);
     let b = atom("en-US", vec![ContentNode::placeholder("<b>")]);
-    store.put_atoms(&[a.clone(), b.clone()]).await.unwrap();
+    store.put_atoms(stream::iter([a.clone(), b.clone()])).await.unwrap();
 
     let before = sorted(store.get_atoms_by_id(id_from_atom(&a)).await.unwrap());
     store.ensure_indexes().await.unwrap();
@@ -230,13 +232,13 @@ async fn get_atoms_by_id_returns_same_results_after_indexing() {
 async fn optimize_indexes_covers_new_writes() {
     let dir = tempfile::tempdir().unwrap();
     let uri = uri_in(&dir);
-    let mut store = AtomStore::create(&uri).await.unwrap();
+    let mut store = LanceAtomStore::create(&uri).await.unwrap();
     let a = atom("en-US", vec![ContentNode::text("first")]);
-    store.put_atoms(std::slice::from_ref(&a)).await.unwrap();
+    store.put_atoms(stream::iter([a.clone()])).await.unwrap();
     store.ensure_indexes().await.unwrap();
 
     let b = atom("en-US", vec![ContentNode::text("second")]);
-    store.put_atoms(std::slice::from_ref(&b)).await.unwrap();
+    store.put_atoms(stream::iter([b.clone()])).await.unwrap();
     store
         .optimize_indexes(&OptimizeOptions::default())
         .await
@@ -252,12 +254,12 @@ async fn optimize_indexes_covers_new_writes() {
 async fn compact_preserves_all_data() {
     let dir = tempfile::tempdir().unwrap();
     let uri = uri_in(&dir);
-    let mut store = AtomStore::create(&uri).await.unwrap();
+    let mut store = LanceAtomStore::create(&uri).await.unwrap();
     let atoms: Vec<Atom> = (0..4)
         .map(|i| atom("en-US", vec![ContentNode::text(format!("atom_{i}"))]))
         .collect();
     for a in &atoms {
-        store.put_atoms(std::slice::from_ref(a)).await.unwrap();
+        store.put_atoms(stream::iter([a.clone()])).await.unwrap();
     }
 
     store.compact(&CompactionOptions::default()).await.unwrap();
@@ -274,13 +276,13 @@ async fn compact_preserves_all_data() {
 async fn cleanup_versions_preserves_latest_data() {
     let dir = tempfile::tempdir().unwrap();
     let uri = uri_in(&dir);
-    let mut store = AtomStore::create(&uri).await.unwrap();
+    let mut store = LanceAtomStore::create(&uri).await.unwrap();
     let a = atom("en-US", vec![ContentNode::text("first")]);
     let b = atom("en-US", vec![ContentNode::text("second")]);
     let c = atom("en-US", vec![ContentNode::text("third")]);
-    store.put_atoms(std::slice::from_ref(&a)).await.unwrap();
-    store.put_atoms(std::slice::from_ref(&b)).await.unwrap();
-    store.put_atoms(std::slice::from_ref(&c)).await.unwrap();
+    store.put_atoms(stream::iter([a.clone()])).await.unwrap();
+    store.put_atoms(stream::iter([b.clone()])).await.unwrap();
+    store.put_atoms(stream::iter([c.clone()])).await.unwrap();
 
     let stats = store.cleanup_versions(1).await.unwrap();
     assert!(stats.old_versions >= 2, "should have removed old versions");
@@ -322,8 +324,8 @@ proptest! {
         let all_found = runtime.block_on(async {
             let dir = tempfile::tempdir().unwrap();
             let uri = uri_in(&dir);
-            let mut store = AtomStore::create(&uri).await.unwrap();
-            store.put_atoms(&atoms).await.unwrap();
+            let mut store = LanceAtomStore::create(&uri).await.unwrap();
+            store.put_atoms(stream::iter(atoms.clone())).await.unwrap();
 
             for wanted in &atoms {
                 let matches = store.get_atoms_by_id(id_from_atom(wanted)).await.unwrap();

@@ -1,15 +1,25 @@
 [package]
-name = "observatory-store"
+name = "observatory-lance"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Store traits for observatory atoms and observations — backend-agnostic."
+description = "Lance-backed implementation of the observatory-store traits."
 repository = "https://github.com/EnzoAgosta/Observatory"
 
 [dependencies]
 async-trait = "0.1.88"
+arrow = "58"
 futures = "0.3.31"
+lance = "7.0.0"
+lance-index = "7.0.0"
 observatory-core = { version = "0.2.0", path = "../observatory-core" }
 observatory-observations = { version = "0.1.0", path = "../observatory-observations" }
+observatory-store = { version = "0.1.0", path = "../observatory-store" }
 serde_json = "1.0.150"
+sha2.workspace = true
+
+[dev-dependencies]
+proptest = "1.11.0"
+tempfile = "3.27.0"
+tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros"] }

@@ -16,8 +16,9 @@ use observatory_core::identity::AtomId;
 use observatory_core::ir::{Atom, ContentNode, LanguageTag};
 use observatory_observations::identity::micros_to_system_time;
 use observatory_observations::{Kind, Observation};
+use observatory_store::StoreError;
 
-use crate::error::{Result, StoreError};
+use crate::error::Result;
 use crate::schema::{
     CONTENT_NODES, EFFECTIVE_AT_COLUMN, KIND_COLUMN, LANGUAGE_COLUMN, NODE_DATA_FIELD,
     NODE_KIND_FIELD, NODE_KIND_PLACEHOLDER, NODE_KIND_TEXT, PAYLOAD_COLUMN, RECORDED_AT_COLUMN,

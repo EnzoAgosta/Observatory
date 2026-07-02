@@ -1,7 +1,0 @@
-# Seeds for failure cases proptest has generated in the past. It is
-# automatically read and these particular cases re-run before any
-# novel cases are generated.
-#
-# It is recommended to check this file in to source control so that
-# everyone who runs the test benefits from these saved cases.
-cc c52fbfa9644a3e149b55c5781352e58680157f1e86172dd1322920ca7ce7f045 # shrinks to observations = [Observation { kind: Kind("translation_of"), subjects: [AtomId([0, 0, 0, 0, 0, 0, 0, 0, 78, 139, 110, 79, 118, 150, 83, 182, 97, 167, 253, 104, 19, 72, 118, 59, 222, 169, 134, 236, 27, 167, 181, 160])], recorded_at: SystemTime { tv_sec: 0, tv_nsec: 0 }, effective_at: SystemTime { tv_sec: 0, tv_nsec: 0 }, payload: Object {} }]
