@@ -162,86 +162,95 @@ fn update_framed(hasher: &mut Sha256, bytes: &[u8]) {
 /// observations within one call collapse to a single row (deduped by id), so the
 /// merge key is never duplicated inside a batch.
 pub fn encode_observations(observations: &[Observation]) -> RecordBatch {
-    let mut observation_id_column = FixedSizeBinaryBuilder::new(DIGEST_WIDTH);
-    let mut kind_column = StringBuilder::new();
-
-    let subject_field = Arc::new(Field::new(
-        SUBJECT_FIELD,
-        DataType::FixedSizeBinary(DIGEST_WIDTH),
-        false,
-    ));
-    let mut subjects_column =
-        ListBuilder::new(FixedSizeBinaryBuilder::new(DIGEST_WIDTH)).with_field(subject_field);
-
-    let mut recorded_at_values: Vec<i64> = Vec::new();
-    let mut effective_at_values: Vec<i64> = Vec::new();
-    let mut payload_column = StringBuilder::new();
-
+    let mut columns = ObservationColumns::new();
     let mut seen = HashSet::new();
     for obs in observations {
         let digest = id_from_observation(obs).digest();
         if !seen.insert(digest) {
             continue;
         }
-        encode_observation(
-            obs,
-            digest,
-            &mut observation_id_column,
-            &mut kind_column,
-            &mut subjects_column,
-            &mut recorded_at_values,
-            &mut effective_at_values,
-            &mut payload_column,
-        );
+        columns.append(obs, digest);
     }
-
-    let recorded_at = TimestampMicrosecondArray::from(recorded_at_values).with_timezone("UTC");
-    let effective_at = TimestampMicrosecondArray::from(effective_at_values).with_timezone("UTC");
-
-    let columns: Vec<ArrayRef> = vec![
-        Arc::new(observation_id_column.finish()),
-        Arc::new(kind_column.finish()),
-        Arc::new(subjects_column.finish()),
-        Arc::new(recorded_at),
-        Arc::new(effective_at),
-        Arc::new(payload_column.finish()),
-    ];
-
-    RecordBatch::try_new(observations_schema(), columns)
-        .expect("encoded arrays match the observations schema by construction")
+    columns.finish()
 }
 
-/// Appends one observation across all column builders in lockstep — its id, kind,
-/// subjects, both timestamps, and payload — so a partially-written observation is
-/// impossible. The `digest` is passed in (already computed for the batch dedup)
-/// so it is hashed once per observation, not twice.
-fn encode_observation(
-    obs: &Observation,
-    digest: [u8; 32],
-    observation_id_column: &mut FixedSizeBinaryBuilder,
-    kind_column: &mut StringBuilder,
-    subjects_column: &mut ListBuilder<FixedSizeBinaryBuilder>,
-    recorded_at_values: &mut Vec<i64>,
-    effective_at_values: &mut Vec<i64>,
-    payload_column: &mut StringBuilder,
-) {
-    observation_id_column
-        .append_value(digest)
-        .expect("an ObservationId digest is exactly DIGEST_WIDTH bytes");
-    kind_column.append_value(obs.kind().as_str());
+/// The per-column builders for one observations batch, bundled so that appending
+/// one observation across all columns stays atomic (a partially-written row is
+/// impossible) and [`finish`](Self::finish) assembles the `RecordBatch` in one
+/// place that matches the observations schema by construction.
+struct ObservationColumns {
+    observation_id: FixedSizeBinaryBuilder,
+    kind: StringBuilder,
+    subjects: ListBuilder<FixedSizeBinaryBuilder>,
+    recorded_at: Vec<i64>,
+    effective_at: Vec<i64>,
+    payload: StringBuilder,
+}
 
-    let subject_builder = subjects_column.values();
-    for subject in obs.subjects() {
-        subject_builder
-            .append_value(subject.digest())
-            .expect("an AtomId digest is exactly DIGEST_WIDTH bytes");
+impl ObservationColumns {
+    fn new() -> Self {
+        let subject_field = Arc::new(Field::new(
+            SUBJECT_FIELD,
+            DataType::FixedSizeBinary(DIGEST_WIDTH),
+            false,
+        ));
+        Self {
+            observation_id: FixedSizeBinaryBuilder::new(DIGEST_WIDTH),
+            kind: StringBuilder::new(),
+            subjects: ListBuilder::new(FixedSizeBinaryBuilder::new(DIGEST_WIDTH))
+                .with_field(subject_field),
+            recorded_at: Vec::new(),
+            effective_at: Vec::new(),
+            payload: StringBuilder::new(),
+        }
     }
-    subjects_column.append(true);
 
-    recorded_at_values.push(system_time_to_micros(obs.recorded_at()));
-    effective_at_values.push(system_time_to_micros(obs.effective_at()));
+    /// Appends `obs` across all column builders in lockstep — its id, kind,
+    /// subjects, both timestamps, and payload — so a partially-written
+    /// observation is impossible. The `digest` is passed in (already computed
+    /// for the batch dedup) so it is hashed once per observation, not twice.
+    fn append(&mut self, obs: &Observation, digest: [u8; 32]) {
+        self.observation_id
+            .append_value(digest)
+            .expect("an ObservationId digest is exactly DIGEST_WIDTH bytes");
+        self.kind.append_value(obs.kind().as_str());
 
-    let payload = serde_json::to_vec(obs.payload()).expect("JSON serialization is infallible");
-    let payload_str = std::str::from_utf8(&payload).expect("JSON is valid UTF-8");
-    payload_column.append_value(payload_str);
+        let subject_builder = self.subjects.values();
+        for subject in obs.subjects() {
+            subject_builder
+                .append_value(subject.digest())
+                .expect("an AtomId digest is exactly DIGEST_WIDTH bytes");
+        }
+        self.subjects.append(true);
+
+        self.recorded_at
+            .push(system_time_to_micros(obs.recorded_at()));
+        self.effective_at
+            .push(system_time_to_micros(obs.effective_at()));
+
+        let payload = serde_json::to_vec(obs.payload()).expect("JSON serialization is infallible");
+        let payload_str = std::str::from_utf8(&payload).expect("JSON is valid UTF-8");
+        self.payload.append_value(payload_str);
+    }
+
+    /// Finishes all builders and assembles the `RecordBatch` in observations
+    /// schema order.
+    fn finish(mut self) -> RecordBatch {
+        let recorded_at =
+            TimestampMicrosecondArray::from(self.recorded_at).with_timezone("UTC");
+        let effective_at =
+            TimestampMicrosecondArray::from(self.effective_at).with_timezone("UTC");
+
+        let columns: Vec<ArrayRef> = vec![
+            Arc::new(self.observation_id.finish()),
+            Arc::new(self.kind.finish()),
+            Arc::new(self.subjects.finish()),
+            Arc::new(recorded_at),
+            Arc::new(effective_at),
+            Arc::new(self.payload.finish()),
+        ];
+
+        RecordBatch::try_new(observations_schema(), columns)
+            .expect("encoded arrays match the observations schema by construction")
+    }
 }
