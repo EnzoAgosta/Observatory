@@ -38,6 +38,12 @@ impl Kind {
     }
 }
 
+impl fmt::Display for Kind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 /// Why a [`Kind`] failed to construct.
 #[derive(Debug)]
 pub enum KindError {
@@ -84,5 +90,15 @@ mod tests {
     #[test]
     fn empty_error_displays_a_reason() {
         assert!(KindError::Empty.to_string().contains("must not be empty"));
+    }
+
+    #[test]
+    fn display_emits_the_label_verbatim() {
+        let kind = Kind::new("translation_of").unwrap();
+        assert_eq!(kind.to_string(), "translation_of");
+        assert_eq!(
+            Kind::new(" approved_by ").unwrap().to_string(),
+            " approved_by "
+        );
     }
 }

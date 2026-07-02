@@ -60,6 +60,19 @@ impl Atom {
     }
 }
 
+impl fmt::Display for Atom {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Atom(language={}, content=[", self.language)?;
+        for (i, node) in self.content.iter().enumerate() {
+            if i > 0 {
+                f.write_str(", ")?;
+            }
+            write!(f, "{node:?}")?;
+        }
+        f.write_str("])")
+    }
+}
+
 /// One run of an [`Atom`]: either translatable text or an opaque placeholder.
 ///
 /// The wrapped `String` is the raw recorded content and is never interpreted. For
@@ -153,6 +166,12 @@ impl LanguageTag {
     /// (`region()`, `script()`, …).
     pub fn as_parsed(&self) -> &OxiLanguageTag<String> {
         &self.0
+    }
+}
+
+impl fmt::Display for LanguageTag {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.0.as_str())
     }
 }
 
@@ -303,5 +322,31 @@ mod tests {
         let error = LanguageTag::from_string("en").unwrap_err();
         assert!(matches!(error, LanguageTagError::MissingRegion { .. }));
         assert!(error.to_string().contains("region"));
+    }
+
+    #[test]
+    fn language_tag_displays_as_the_tag_string() {
+        let tag = LanguageTag::from_string("en-US").unwrap();
+        assert_eq!(tag.to_string(), "en-US");
+        assert_eq!(
+            LanguageTag::from_string("fr-FR").unwrap().to_string(),
+            "fr-FR"
+        );
+    }
+
+    #[test]
+    fn atom_display_is_structured_with_variant_tags() {
+        let atom = Atom::new(
+            LanguageTag::from_string("en-US").unwrap(),
+            [
+                ContentNode::text("Hello "),
+                ContentNode::placeholder("<b>"),
+                ContentNode::text("world"),
+            ],
+        );
+        assert_eq!(
+            atom.to_string(),
+            r#"Atom(language=en-US, content=[Text("Hello "), Placeholder("<b>"), Text("world")])"#
+        );
     }
 }
