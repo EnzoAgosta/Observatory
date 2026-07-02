@@ -61,6 +61,10 @@ open(uri)              -> AtomStore     // errors if absent
 create(uri)            -> AtomStore     // empty dataset; errors if present
 put_atoms(&[Atom])     -> ()            // dedup-on-write upsert, one commit
 get_atoms_by_id(AtomId) -> Vec<Atom>    // every atom filed under the id
+ensure_indexes()       -> ()            // BTREE on atom_id (idempotent)
+optimize_indexes(&OptimizeOptions) -> () // refresh index to cover new writes
+compact(&CompactionOptions) -> ()       // defragment small fragments
+cleanup_versions(retain: usize) -> RemovalStats // GC old versions, keep last N
 ```
 
 ## API (`ObservationStore`)
@@ -71,6 +75,11 @@ create(uri)                        -> ObservationStore     // empty dataset; err
 put_observations(&[Observation])   -> ()                   // dedup-on-write upsert, one commit
 get_observation_by_id(ObservationId) -> Option<Observation> // point lookup (id is unique)
 get_observations_of_kind(&Kind)    -> Vec<Observation>     // all observations of one kind
+observations_about(AtomId)          -> Vec<Observation>     // every observation whose subjects contain the atom
+ensure_indexes()       -> ()            // BTREE observation_id + BITMAP kind + LABEL_LIST subjects (idempotent)
+optimize_indexes(&OptimizeOptions) -> () // refresh indexes to cover new writes
+compact(&CompactionOptions) -> ()       // defragment small fragments
+cleanup_versions(retain: usize) -> RemovalStats // GC old versions, keep last N
 ```
 
 Observations are content-addressed: the store derives each `ObservationId` itself
@@ -111,19 +120,27 @@ async fn round_trip() -> observatory_store::Result<()> {
 
 ## Status
 
-Atom and observation persistence are implemented and tested against real on-disk
-datasets:
+Atom and observation persistence, with indexes and maintenance, are implemented
+and tested against real on-disk datasets:
 
 - **`AtomStore`**: `open`/`create`, dedup-on-write `put_atoms`,
-  `get_atoms_by_id`.
+  `get_atoms_by_id`, plus index/maintenance primitives — `ensure_indexes`
+  (BTREE on `atom_id`), `optimize_indexes`, `compact`, `cleanup_versions`.
 - **`ObservationStore`**: `open`/`create`, content-addressed `put_observations`
   (merge_insert on the derived `ObservationId`), `get_observation_by_id`,
-  `get_observations_of_kind`.
+  `get_observations_of_kind`, `observations_about` (array-membership on
+  `subjects` via the LABEL_LIST index), plus the same index/maintenance
+  primitives — `ensure_indexes` (BTREE/`observation_id`, BITMAP/`kind`,
+  LABEL_LIST/`subjects`), `optimize_indexes`, `compact`, `cleanup_versions`.
 
-Still to come: `observations_about` (array-membership on `subjects`, needs the
-LABEL_LIST index), scalar indexes (`atom_id` BTREE, `kind` BITMAP, `subjects`
-LABEL_LIST), Lance maintenance (compaction, version cleanup), and a DuckDB query
-path over the datasets. See [`DESIGN.md`](DESIGN.md) for the full plan.
+The store is dumps primitives, not policy: when to compact, how many versions
+to keep, whether to refresh indexes after every write or nightly is the
+calling application's concern. The store never calls `optimize_indexes`
+itself — it exposes the primitive, and Lance serves queries correctly (if
+slower) without it.
+
+Still to come: the DuckDB query path over the datasets (compound predicates,
+range queries, joins). See [`DESIGN.md`](DESIGN.md) for the full plan.
 
 ## License
 

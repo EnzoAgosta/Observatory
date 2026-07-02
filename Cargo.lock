@@ -4590,6 +4590,7 @@ version = "0.1.0"
 dependencies = [
  "arrow",
  "lance",
+ "lance-index",
  "observatory-core",
  "observatory-observations",
  "proptest",

@@ -7,12 +7,15 @@
 
 use std::time::{Duration, SystemTime};
 
+use lance::dataset::optimize::CompactionOptions;
+use lance_index::optimize::OptimizeOptions;
 use observatory_core::identity::{AtomId, id_from_atom};
 use observatory_core::ir::{Atom, ContentNode, LanguageTag};
 use observatory_observations::Kind;
 use observatory_observations::identity::id_from_observation;
 use observatory_observations::{Observation, ObservationId};
 use observatory_store::ObservationStore;
+use proptest::prelude::*;
 use serde_json::json;
 use tempfile::TempDir;
 
@@ -259,4 +262,265 @@ async fn distinct_observations_sharing_subjects_both_persist() {
         store.get_observation_by_id(blacklisted_id).await.unwrap(),
         Some(blacklisted)
     );
+}
+
+// --- indexes & maintenance ---
+
+#[tokio::test(flavor = "multi_thread")]
+async fn ensure_indexes_succeeds_after_puts() {
+    let dir = tempfile::tempdir().unwrap();
+    let uri = uri_in(&dir);
+    let mut store = ObservationStore::create(&uri).await.unwrap();
+    store
+        .put_observations(std::slice::from_ref(&translation_observation()))
+        .await
+        .unwrap();
+    store.ensure_indexes().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn ensure_indexes_is_idempotent() {
+    let dir = tempfile::tempdir().unwrap();
+    let uri = uri_in(&dir);
+    let mut store = ObservationStore::create(&uri).await.unwrap();
+    store
+        .put_observations(std::slice::from_ref(&translation_observation()))
+        .await
+        .unwrap();
+    store.ensure_indexes().await.unwrap();
+    store.ensure_indexes().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn observations_about_returns_matching_observations() {
+    let dir = tempfile::tempdir().unwrap();
+    let uri = uri_in(&dir);
+    let mut store = ObservationStore::create(&uri).await.unwrap();
+
+    let en_hello = atom_id("en-US", "Hello");
+    let fr_bonjour = atom_id("fr-FR", "Bonjour");
+    let de_hallo = atom_id("de-DE", "Hallo");
+
+    let translation = Observation::relationship(
+        kind("translation_of"),
+        vec![en_hello, fr_bonjour],
+        SystemTime::UNIX_EPOCH,
+        None,
+        json!({}),
+    );
+    let approval = Observation::property(
+        kind("approved_by"),
+        en_hello,
+        SystemTime::UNIX_EPOCH,
+        None,
+        json!({}),
+    );
+    let unrelated = Observation::property(
+        kind("context_for"),
+        de_hallo,
+        SystemTime::UNIX_EPOCH,
+        None,
+        json!({}),
+    );
+    store
+        .put_observations(&[translation.clone(), approval.clone(), unrelated])
+        .await
+        .unwrap();
+
+    let about_en_hello = store.observations_about(en_hello).await.unwrap();
+    assert_eq!(about_en_hello.len(), 2);
+    let ids: Vec<ObservationId> = about_en_hello
+        .iter()
+        .map(id_from_observation)
+        .collect();
+    assert!(ids.contains(&id_from_observation(&translation)));
+    assert!(ids.contains(&id_from_observation(&approval)));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn observations_about_unknown_atom_is_empty() {
+    let dir = tempfile::tempdir().unwrap();
+    let uri = uri_in(&dir);
+    let store = ObservationStore::create(&uri).await.unwrap();
+    let absent = AtomId::from_digest([0u8; 32]);
+    assert!(
+        store
+            .observations_about(absent)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn observations_about_returns_same_after_indexing() {
+    let dir = tempfile::tempdir().unwrap();
+    let uri = uri_in(&dir);
+    let mut store = ObservationStore::create(&uri).await.unwrap();
+
+    let en_hello = atom_id("en-US", "Hello");
+    let obs = Observation::property(
+        kind("approved_by"),
+        en_hello,
+        SystemTime::UNIX_EPOCH,
+        None,
+        json!({}),
+    );
+    store.put_observations(std::slice::from_ref(&obs)).await.unwrap();
+
+    let before = store.observations_about(en_hello).await.unwrap();
+    store.ensure_indexes().await.unwrap();
+    let after = store.observations_about(en_hello).await.unwrap();
+    assert_eq!(before.len(), after.len());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn optimize_indexes_covers_new_writes() {
+    let dir = tempfile::tempdir().unwrap();
+    let uri = uri_in(&dir);
+    let mut store = ObservationStore::create(&uri).await.unwrap();
+
+    let en_hello = atom_id("en-US", "Hello");
+    let first = Observation::property(
+        kind("approved_by"),
+        en_hello,
+        SystemTime::UNIX_EPOCH,
+        None,
+        json!({}),
+    );
+    store.put_observations(std::slice::from_ref(&first)).await.unwrap();
+    store.ensure_indexes().await.unwrap();
+
+    let second = Observation::property(
+        kind("blacklisted"),
+        en_hello,
+        SystemTime::UNIX_EPOCH + Duration::from_secs(1),
+        None,
+        json!({}),
+    );
+    store.put_observations(std::slice::from_ref(&second)).await.unwrap();
+    store
+        .optimize_indexes(&OptimizeOptions::default())
+        .await
+        .unwrap();
+
+    let got = store.observations_about(en_hello).await.unwrap();
+    assert_eq!(got.len(), 2);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn compact_preserves_all_observations() {
+    let dir = tempfile::tempdir().unwrap();
+    let uri = uri_in(&dir);
+    let mut store = ObservationStore::create(&uri).await.unwrap();
+    let observations: Vec<Observation> = (0..4)
+        .map(|i| {
+            Observation::property(
+                kind("approved_by"),
+                atom_id("en-US", &format!("atom_{i}")),
+                SystemTime::UNIX_EPOCH + Duration::from_secs(i),
+                None,
+                json!({}),
+            )
+        })
+        .collect();
+    for obs in &observations {
+        store.put_observations(std::slice::from_ref(obs)).await.unwrap();
+    }
+
+    store.compact(&CompactionOptions::default()).await.unwrap();
+
+    for obs in &observations {
+        let id = id_from_observation(obs);
+        assert_eq!(store.get_observation_by_id(id).await.unwrap(), Some(obs.clone()));
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cleanup_versions_preserves_latest_observations() {
+    let dir = tempfile::tempdir().unwrap();
+    let uri = uri_in(&dir);
+    let mut store = ObservationStore::create(&uri).await.unwrap();
+    let first = translation_observation();
+    let second = approval_observation();
+    let third = Observation::property(
+        kind("context_for"),
+        atom_id("en-US", "Hello"),
+        SystemTime::UNIX_EPOCH + Duration::from_secs(3000),
+        None,
+        json!({}),
+    );
+    store.put_observations(std::slice::from_ref(&first)).await.unwrap();
+    store.put_observations(std::slice::from_ref(&second)).await.unwrap();
+    store.put_observations(std::slice::from_ref(&third)).await.unwrap();
+
+    let stats = store.cleanup_versions(1).await.unwrap();
+    assert!(stats.old_versions >= 2);
+
+    let id = id_from_observation(&third);
+    assert_eq!(store.get_observation_by_id(id).await.unwrap(), Some(third));
+}
+
+// --- proptest ---
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(16))]
+
+    /// For any batch of observations, `observations_about(subject)` returns
+    /// exactly the observations whose `subjects` list contains `subject` —
+    /// no more, no less.
+    #[test]
+    fn observations_about_finds_exactly_matching(
+        observations in prop::collection::vec(observation_strategy(), 0..8)
+    ) {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let passed = runtime.block_on(async {
+            let dir = tempfile::tempdir().unwrap();
+            let uri = uri_in(&dir);
+            let mut store = ObservationStore::create(&uri).await.unwrap();
+            store.put_observations(&observations).await.unwrap();
+
+            let mut all_subjects: Vec<AtomId> = Vec::new();
+            for obs in &observations {
+                all_subjects.extend(obs.subjects());
+            }
+
+            for subject in all_subjects {
+                let got = store.observations_about(subject).await.unwrap();
+                let expected: usize = observations
+                    .iter()
+                    .filter(|obs| obs.subjects().contains(&subject))
+                    .count();
+                if got.len() != expected {
+                    return false;
+                }
+            }
+            true
+        });
+
+        prop_assert!(passed, "observations_about returned the wrong count");
+    }
+}
+
+fn observation_strategy() -> impl Strategy<Value = Observation> {
+    let kinds = prop::sample::select(vec![
+        "translation_of",
+        "approved_by",
+        "blacklisted",
+        "context_for",
+    ]);
+    let subjects = prop::collection::vec(any::<[u8; 32]>(), 1..3);
+    (kinds, subjects).prop_map(|(kind_label, subjects)| {
+        Observation::property(
+            Kind::new(kind_label).unwrap(),
+            AtomId::from_digest(subjects[0]),
+            SystemTime::UNIX_EPOCH,
+            None,
+            json!({}),
+        )
+    })
 }

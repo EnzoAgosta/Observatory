@@ -61,14 +61,15 @@ Implemented today: the domain model end to end — atoms, identity, and
 normalization (`observatory-core`), the observation model with content-addressed
 identity (`observatory-observations`) — the XLIFF 1.2 segment codec
 (`observatory-xliff12`), and **atom and observation persistence** on Lance
-(`observatory-store`): write-with-dedup and point/equality lookups, tested against
-real on-disk datasets.
+(`observatory-store`): write-with-dedup, point/equality lookups, the
+`observations_about` array-membership query, scalar indexes (BTREE on
+`atom_id`/`observation_id`, BITMAP on `kind`, LABEL_LIST on `subjects`), and
+Lance maintenance primitives (`ensure_indexes`, `optimize_indexes`, `compact`,
+`cleanup_versions`), all tested against real on-disk datasets.
 
-Next, roughly in order: `observations_about` and scalar indexes (BTREE on
-`atom_id`/timestamps, BITMAP on `kind`, LABEL_LIST on `subjects`), Lance
-maintenance (compaction, version cleanup), then the DuckDB query path.
-Embeddings and vector search, further format adapters (XLIFF dialects, TMX), and
-any graph view are further out.
+Next, roughly in order: the DuckDB query path over the Lance datasets (compound
+predicates, range queries, joins), then embeddings and vector search, further
+format adapters (XLIFF dialects, TMX), and any graph view.
 
 New here? [`docs/PHILOSOPHY.md`](docs/PHILOSOPHY.md) lays out the mental model —
 how to think about atoms, identity, and where responsibilities live — and is the

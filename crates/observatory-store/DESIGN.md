@@ -157,7 +157,7 @@ Schema:
 
 | column       | Arrow type                                  | notes                                                                                                              |
 | ------------ | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `atom_id`    | `FixedSizeBinary(32)`                       | the SHA-256 _matching_ key; lossy (excludes placeholder markup), so **not unique**. BTREE (deferred).              |
+| `atom_id`    | `FixedSizeBinary(32)`                       | the SHA-256 _matching_ key; lossy (excludes placeholder markup), so **not unique**. BTREE.              |
 | `row_digest` | `FixedSizeBinary(32)`                       | the SHA-256 _exact_ key over the full atom incl. markup; the dedup/upsert key. Internal — never exposed.           |
 | `language`   | `Utf8`                                      | the BCP-47 tag, verbatim. Lance auto-dictionary-encodes low-cardinality values; no Arrow `Dictionary` type needed. |
 | `content`    | `List<Struct<node_kind: Utf8, data: Utf8>>` | the atom's content nodes, in order.                                                                                |
@@ -208,11 +208,11 @@ The six-column envelope, matching `observatory-observations` exactly:
 
 | column           | Arrow type                      | notes                                                                                       |
 | ---------------- | ------------------------------- | ------------------------------------------------------------------------------------------- |
-| `observation_id` | `FixedSizeBinary(32)`           | the content-addressed SHA-256, derived by the store via `id_from_observation`.              |
-| `kind`           | `Utf8`                          | the kind label, verbatim. BITMAP (deferred).                                                |
-| `subjects`       | `List<FixedSizeBinary(32)>`     | the keyed atoms, in order. LABEL_LIST (deferred).                                           |
-| `recorded_at`    | `Timestamp(Microsecond, "UTC")` | transaction time. BTREE (deferred).                                                         |
-| `effective_at`   | `Timestamp(Microsecond, "UTC")` | valid time. BTREE (deferred).                                                               |
+| `observation_id` | `FixedSizeBinary(32)`           | the content-addressed SHA-256, derived by the store via `id_from_observation`. BTREE.       |
+| `kind`           | `Utf8`                          | the kind label, verbatim. BITMAP.                                                           |
+| `subjects`       | `List<FixedSizeBinary(32)>`     | the keyed atoms, in order. LABEL_LIST.                                                      |
+| `recorded_at`    | `Timestamp(Microsecond, "UTC")` | transaction time. No Lance index (range queries — DuckDB's lane, increment 4).              |
+| `effective_at`   | `Timestamp(Microsecond, "UTC")` | valid time. No Lance index (range queries — DuckDB's lane, increment 4).                    |
 | `payload`        | `Utf8`                          | the `serde_json::Value`, serialized to a JSON string; DuckDB parses it with JSON functions. |
 
 **Content-addressed identity, not minted.** `observation_id` is a 32-byte SHA-256
@@ -272,10 +272,11 @@ impl AtomStore {
     async fn put_atoms(&mut self, atoms: &[Atom]) -> Result<()>;       // dedup-by-row_digest upsert, one commit
     async fn get_atoms_by_id(&self, id: AtomId) -> Result<Vec<Atom>>;  // all matches for the non-unique id
 
-    // maintenance — increment 3
-    async fn ensure_indexes(&mut self) -> Result<()>;                      // BTREE on atom_id
-    async fn compact(&mut self) -> Result<()>;
-    async fn cleanup_versions(&mut self) -> Result<()>;
+    // indexes & maintenance — increment 3 (implemented)
+    async fn ensure_indexes(&mut self) -> Result<()>;                          // BTREE on atom_id (idempotent)
+    async fn optimize_indexes(&mut self, options: &OptimizeOptions) -> Result<()>; // incremental delta-merge refresh
+    async fn compact(&mut self, options: &CompactionOptions) -> Result<()>;     // defragmentation (no tombstones — append-only store)
+    async fn cleanup_versions(&self, retain: usize) -> Result<RemovalStats>;   // GC old versions, keep last N
 }
 
 impl ObservationStore {
@@ -288,18 +289,22 @@ impl ObservationStore {
     async fn get_observation_by_id(&self, id: ObservationId) -> Result<Option<Observation>>;  // point lookup
     async fn get_observations_of_kind(&self, kind: &Kind) -> Result<Vec<Observation>>;        // scan filter on kind
 
-    // deferred to increment 3 (needs LABEL_LIST index)
-    // async fn observations_about(&self, atom: AtomId) -> Result<Vec<Observation>>;
+    // observations — increment 3 (implemented, needs the LABEL_LIST index)
+    async fn observations_about(&self, atom: AtomId) -> Result<Vec<Observation>>;  // array-membership on subjects
 
-    // maintenance — increment 3
-    async fn ensure_indexes(&mut self) -> Result<()>;                      // BITMAP on kind, LABEL_LIST on subjects
-    async fn compact(&mut self) -> Result<()>;
-    async fn cleanup_versions(&mut self) -> Result<()>;
+    // indexes & maintenance — increment 3 (implemented)
+    async fn ensure_indexes(&mut self) -> Result<()>;                          // BTREE observation_id + BITMAP kind + LABEL_LIST subjects
+    async fn optimize_indexes(&mut self, options: &OptimizeOptions) -> Result<()>; // incremental delta-merge refresh
+    async fn compact(&mut self, options: &CompactionOptions) -> Result<()>;     // defragmentation
+    async fn cleanup_versions(&self, retain: usize) -> Result<RemovalStats>;   // GC old versions, keep last N
 }
 ```
 
 Each store owns the maintenance of its own dataset, so `ensure_indexes` /
-`compact` / `cleanup_versions` appear on both.
+`compact` / `cleanup_versions` appear on both. All maintenance methods take
+options or a retention count from the caller: the store **exposes primitives,
+not policy** — when to compact, how many versions to keep, whether to refresh
+indexes after every write or nightly is the calling application's concern.
 
 - `put_atoms` is **idempotent**: `merge_insert` keyed on `row_digest` (the exact
   key) with `WhenMatched::DoNothing` / `WhenNotMatched::InsertAll`. A byte-identical
@@ -321,20 +326,79 @@ later `serde_json::Error`) and adds the store's own variants — e.g. a row whos
 `node_kind`. **No `unwrap`/`expect` in library code**; every fallible boundary
 returns a `StoreError`.
 
-## Indexes (increment 3)
+## Indexes (increment 3 — DONE)
 
-Built via the `DatasetIndexExt::create_index` extension trait once the tables hold
-data:
+Built via `DatasetIndexExt::create_index` once the tables hold data, and picked
+to serve the store's own Lance-lane read methods (point lookups and
+single-predicate scans), not the compound/range queries that belong to the
+DuckDB query path (increment 4):
 
-- `atom_id` → **BTREE** (point lookups, joins).
-- `kind` → **BITMAP** (low-cardinality equality filters).
-- `subjects` → **LABEL_LIST** (array membership: "every observation touching atom
-  X").
+- `atom_id` (atoms) → **BTREE** — point lookup for `get_atoms_by_id`.
+- `observation_id` (observations) → **BTREE** — point lookup for `get_observation_by_id`.
+- `kind` (observations) → **BITMAP** — low-cardinality equality filter for `get_observations_of_kind`.
+- `subjects` (observations) → **LABEL_LIST** — array-membership for `observations_about` (the index's entire raison d'être).
 
-Indexes are deferred because `put`/`get` are correct without them — just slower —
-and an index over an empty table is pointless. Note for later: new rows written
-after an index is built are unindexed until rebuilt (`create_index(replace:
-true)`), and compaction remaps row ids (rebuild or use remap options).
+`ensure_indexes` on each store is **idempotent**: it checks which named indexes
+already exist (`load_indices_by_name` / `load_indices`) and builds only the
+missing ones, swapping the dataset handle once at the end of the batch. The
+store hardcodes which indexes to build because it knows its own schema — it
+has no opinion on *when* to call `ensure_indexes` (that is the caller's call).
+
+Indexes are built **after** the table holds data (an index over an empty table
+is pointless), but the store does not build them automatically: the caller calls
+`ensure_indexes` at the point in its lifecycle where indexing makes sense.
+
+### How Lance uses the index automatically
+
+The scanner's `create_filter_plan` loads all scalar indices on the dataset
+(`dataset.scalar_index_info()`), inspects the filter expression, and rewrites
+the plan to use the index when a predicate references an indexed column. The
+link is by **column name**, registered in the dataset manifest when the index is
+built — there is no `use_index(column)` call. `use_scalar_index` defaults to
+true, with an escape hatch (`scanner.use_scalar_index(false)`) for corner cases
+where the planner picks badly.
+
+### The "fast point lookup" myth
+
+Lance's "optimized for point lookups" framing refers to **index + take**, not a
+free property of the format. Without an index, a scalar predicate (e.g.
+`atom_id = X'…'`) builds a `LanceScanExec` that opens every fragment, reads the
+column, and filters in memory — O(rows). Zone maps (per-fragment statistics)
+prune some fragments, but the worst case is still a full scan. The BTREE is
+what collapses it to O(log rows): the planner rewrites to `ScalarIndexExec` →
+row addresses → `TakeExec`.
+
+### `observations_about` and the `array_has` cast
+
+The `observations_about` predicate is `array_has(subjects, arrow_cast(X'<hex>',
+'FixedSizeBinary(32)'))`. The `arrow_cast` is load-bearing: DataFusion's
+`array_has` function refuses to coerce a variable-length `Binary` (what
+`X'…'` parses as) to the inner `FixedSizeBinary(32)` at function resolution —
+unlike `=` (equality), which is lenient. The `arrow_cast` produces the
+fixed-size literal the function requires.
+
+`X'…'` works for the BTREE point lookups (`atom_id = X'…'`,
+`observation_id = X'…'`) because equality's coercion accepts
+`Binary → FixedSizeBinary(32)`. `array_has` does not — it needs the explicit
+cast.
+
+### Stale indexes and `optimize_indexes`
+
+New rows written by `put_*` *after* `ensure_indexes` land in new fragments
+that the existing index does not cover. Lance still serves queries correctly —
+it does a hybrid scan (index for old fragments, scan for new) — but slower.
+`optimize_indexes(&OptimizeOptions)` builds a delta index over the new
+fragments and merges it into the existing index, cheaper than a full rebuild
+(`create_index` with `replace: true`). When to call it (after every write,
+nightly, by fragment count) is the caller's concern — the store exposes the
+primitive, never calls it itself.
+
+### Compaction and indexes
+
+`compact_files` (the Lance function backing `compact`) automatically remaps
+existing indexes as part of the commit, via `DatasetIndexRemapperOptions` (the
+default, passed as `None`). No manual index rebuild is needed after
+compaction.
 
 ## DuckDB / query path (increment 4, deferred)
 
@@ -361,18 +425,33 @@ Intermediate commits need not compile (history is cleaned with `jj` at the end).
    `atom_id`/`row_digest`), with a canonical JSON payload serializer and signed
    `i64` micros timestamp encoding (pre-epoch supported). Covered by unit tests
    on the conversion, integration tests through a real on-disk dataset, and a
-   proptest round-trip property. `observations_about` deferred to increment 3
-   (needs the LABEL_LIST index it was designed for; spike on Lance's array-
-   contains filter syntax deferred rather than committing to a fallback DuckDB
-   or the index will obsolete).
-3. **Indexes + maintenance.** `ensure_indexes`, `compact`, `cleanup_versions`.
+   proptest round-trip property.
+3. **Indexes + maintenance (DONE).** `ensure_indexes` (BTREE on `atom_id`;
+   BTREE on `observation_id`, BITMAP on `kind`, LABEL_LIST on `subjects`),
+   `observations_about` (array-membership via `array_has` on the LABEL_LIST
+   index), `optimize_indexes` (incremental delta-merge refresh),
+   `compact` (defragmentation via `compact_files`, index auto-remap),
+   `cleanup_versions` (old-version GC via `cleanup_with_policy`). Timestamp
+   BTREEs (`recorded_at`, `effective_at`) deliberately not built — range queries
+   are DuckDB's compound-predicate lane (increment 4), and DuckDB does not use
+   Lance's scalar indexes. Covered by integration tests through a real on-disk
+   dataset, and a proptest property for `observations_about`.
 4. **Query path.** Expose the dataset path / Arrow scanner for DuckDB.
 
 ## Deferred decisions, collected
 
-- Scalar indexes — increment 3.
-- `observations_about` (array-membership on `subjects`) — increment 3, with the
-  LABEL_LIST index.
+- Timestamp BTREEs (`recorded_at`, `effective_at`) — range queries are DuckDB's
+  compound-predicate lane (increment 4). DuckDB builds its own stats over
+  scanned data and does not use Lance's scalar indexes, so a Lance BTREE on
+  the timestamps would not help the DuckDB path either. Revisit only if a
+  concrete Lance-lane read method needs equality (not range) on a timestamp.
+- Predicate construction is SQL strings (`scanner.filter("col = X'…'")`). Lance
+  exposes a typed API (`scanner.filter_expr(Expr)`) that avoids the parsing
+  risk and the manual hex/escape rituals. The right move once query shapes
+  grow past ~5–10 distinct patterns, or once a predicate composes other
+  predicates — premature now at three short read methods, all tested, with
+  only the hex digest (no quotes, no escaping needed) and the Kind label
+  (SQL-doubled) as inputs.
 - Symmetric-kind subject canonicalization (needs a kind registry that does not yet
   exist) — deferred; the store records subjects faithfully, as given.
 - Interior-mutability shared store (writers on `&self`) — only if a caller needs

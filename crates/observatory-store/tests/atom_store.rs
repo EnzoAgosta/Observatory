@@ -8,6 +8,8 @@
 use observatory_core::identity::id_from_atom;
 use observatory_core::ir::{Atom, ContentNode, LanguageTag};
 use observatory_store::AtomStore;
+use lance::dataset::optimize::CompactionOptions;
+use lance_index::optimize::OptimizeOptions;
 use proptest::prelude::*;
 use tempfile::TempDir;
 
@@ -173,6 +175,119 @@ async fn empty_put_is_a_noop() {
     assert_eq!(
         store.get_atoms_by_id(id_from_atom(&a)).await.unwrap(),
         vec![a]
+    );
+}
+
+// --- indexes & maintenance ---
+
+#[tokio::test(flavor = "multi_thread")]
+async fn ensure_indexes_succeeds_after_puts() {
+    let dir = tempfile::tempdir().unwrap();
+    let uri = uri_in(&dir);
+    let mut store = AtomStore::create(&uri).await.unwrap();
+    store
+        .put_atoms(std::slice::from_ref(&atom(
+            "en-US",
+            vec![ContentNode::text("hello")],
+        )))
+        .await
+        .unwrap();
+    store.ensure_indexes().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn ensure_indexes_is_idempotent() {
+    let dir = tempfile::tempdir().unwrap();
+    let uri = uri_in(&dir);
+    let mut store = AtomStore::create(&uri).await.unwrap();
+    store
+        .put_atoms(std::slice::from_ref(&atom(
+            "en-US",
+            vec![ContentNode::text("hello")],
+        )))
+        .await
+        .unwrap();
+    store.ensure_indexes().await.unwrap();
+    store.ensure_indexes().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn get_atoms_by_id_returns_same_results_after_indexing() {
+    let dir = tempfile::tempdir().unwrap();
+    let uri = uri_in(&dir);
+    let mut store = AtomStore::create(&uri).await.unwrap();
+    let a = atom("en-US", vec![ContentNode::text("hello")]);
+    let b = atom("en-US", vec![ContentNode::placeholder("<b>")]);
+    store.put_atoms(&[a.clone(), b.clone()]).await.unwrap();
+
+    let before = sorted(store.get_atoms_by_id(id_from_atom(&a)).await.unwrap());
+    store.ensure_indexes().await.unwrap();
+    let after = sorted(store.get_atoms_by_id(id_from_atom(&a)).await.unwrap());
+    assert_eq!(before, after);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn optimize_indexes_covers_new_writes() {
+    let dir = tempfile::tempdir().unwrap();
+    let uri = uri_in(&dir);
+    let mut store = AtomStore::create(&uri).await.unwrap();
+    let a = atom("en-US", vec![ContentNode::text("first")]);
+    store.put_atoms(std::slice::from_ref(&a)).await.unwrap();
+    store.ensure_indexes().await.unwrap();
+
+    let b = atom("en-US", vec![ContentNode::text("second")]);
+    store.put_atoms(std::slice::from_ref(&b)).await.unwrap();
+    store
+        .optimize_indexes(&OptimizeOptions::default())
+        .await
+        .unwrap();
+
+    assert_eq!(
+        store.get_atoms_by_id(id_from_atom(&b)).await.unwrap(),
+        vec![b]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn compact_preserves_all_data() {
+    let dir = tempfile::tempdir().unwrap();
+    let uri = uri_in(&dir);
+    let mut store = AtomStore::create(&uri).await.unwrap();
+    let atoms: Vec<Atom> = (0..4)
+        .map(|i| atom("en-US", vec![ContentNode::text(format!("atom_{i}"))]))
+        .collect();
+    for a in &atoms {
+        store.put_atoms(std::slice::from_ref(a)).await.unwrap();
+    }
+
+    store.compact(&CompactionOptions::default()).await.unwrap();
+
+    for a in &atoms {
+        assert_eq!(
+            store.get_atoms_by_id(id_from_atom(a)).await.unwrap(),
+            vec![a.clone()]
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cleanup_versions_preserves_latest_data() {
+    let dir = tempfile::tempdir().unwrap();
+    let uri = uri_in(&dir);
+    let mut store = AtomStore::create(&uri).await.unwrap();
+    let a = atom("en-US", vec![ContentNode::text("first")]);
+    let b = atom("en-US", vec![ContentNode::text("second")]);
+    let c = atom("en-US", vec![ContentNode::text("third")]);
+    store.put_atoms(std::slice::from_ref(&a)).await.unwrap();
+    store.put_atoms(std::slice::from_ref(&b)).await.unwrap();
+    store.put_atoms(std::slice::from_ref(&c)).await.unwrap();
+
+    let stats = store.cleanup_versions(1).await.unwrap();
+    assert!(stats.old_versions >= 2, "should have removed old versions");
+
+    assert_eq!(
+        store.get_atoms_by_id(id_from_atom(&c)).await.unwrap(),
+        vec![c]
     );
 }
 
